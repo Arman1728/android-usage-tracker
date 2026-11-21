@@ -1,0 +1,6 @@
+{
+  "name": "Android Phone Usage Research Portal",
+  "description": "B.Tech Community Service Project (CSP) survey, SQLite analytics dashboard, and research portal studying Android smartphone usage across demographics.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

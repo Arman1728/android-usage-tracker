@@ -1,0 +1,36 @@
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, sans-serif;
+  background: #f8fafc;
+  color: #0f172a;
+}
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 2rem;
+  background: #0f2547;
+  color: #ffffff;
+}
+.brand { font-weight: 700; }
+.nav a { color: #e2e8f0; text-decoration: none; margin-left: 1.25rem; font-size: 0.9rem; }
+.nav a:hover { color: #ffffff; text-decoration: underline; }
+.container { max-width: 1100px; margin: 1.5rem auto; padding: 0 1rem; display: grid; gap: 1.5rem; }
+.card { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 1.5rem; }
+h1, h2 { color: #0f2547; margin-top: 0; }
+.kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-top: 1rem; }
+.kpi { border: 1px solid #e2e8f0; border-radius: 6px; padding: 1rem; background: #f8fafc; }
+.kpi .label { display: block; font-size: 0.8rem; color: #475569; }
+.kpi strong { font-size: 1.5rem; color: #6d28d9; }
+.form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; }
+.form-grid label { display: flex; flex-direction: column; gap: 0.35rem; font-size: 0.85rem; font-weight: 600; }
+.full-width { grid-column: 1 / -1; }
+input, select, textarea { padding: 0.5rem; border: 1px solid #cbd5e1; border-radius: 5px; font-size: 0.9rem; }
+.checkbox-row { display: flex; flex-wrap: wrap; gap: 0.75rem; }
+.checkbox-row label { flex-direction: row; align-items: center; font-weight: 400; }
+.btn-primary { background: #0f2547; color: #fff; border: none; border-radius: 6px; padding: 0.65rem 1.1rem; cursor: pointer; font-weight: 600; }
+.btn-secondary { background: #ffffff; color: #0f2547; border: 1px solid #cbd5e1; border-radius: 6px; padding: 0.65rem 1.1rem; cursor: pointer; font-weight: 600; }
+.charts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.5rem; }
+table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+th, td { padding: 0.6rem; border-bottom: 1px solid #e2e8f0; text-align: left; }
+th { background: #f8fafc; color: #475569; }

@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Android Phone Usage by Different People — B.Tech CSP (Flask)</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Android Usage CSP</div>
+    <nav class="nav">
+      <a href="#home">Home</a>
+      <a href="#about">About</a>
+      <a href="#survey">Survey</a>
+      <a href="#analytics">Analytics</a>
+      <a href="#table">Data Table</a>
+      <a href="#admin">Admin</a>
+    </nav>
+  </header>
+
+  <main class="container">
+    <section id="home" class="card">
+      <h1>Android Phone Usage by Different People</h1>
+      <p>B.Tech Community Service Project (CSP) research platform powered by Python Flask, SQLite, and Chart.js.</p>
+      <div class="kpi-grid">
+        <div class="kpi"><span class="label">Actual Survey Submissions</span><strong id="real-count">0</strong></div>
+        <div class="kpi"><span class="label">Sample Demo Records</span><strong id="sample-count">0</strong></div>
+        <div class="kpi"><span class="label">Avg Daily Usage (All)</span><strong id="avg-hours">0 hrs</strong></div>
+      </div>
+    </section>
+
+    <section id="about" class="card">
+      <h2>About the Project &amp; Categories</h2>
+      <p>Studying Android usage across Students, Teachers, Working Professionals, Business Owners, Homemakers, and Senior Citizens to analyze screen-time balance, top apps, and privacy awareness.</p>
+    </section>
+
+    <section id="survey" class="card">
+      <h2>Survey Form</h2>
+      <form id="survey-form" class="form-grid">
+        <label>Age Group *
+          <select name="ageGroup" required>
+            <option value="">Select</option>
+            <option value="13-17">13-17</option><option value="18-24">18-24</option>
+            <option value="25-34">25-34</option><option value="35-44">35-44</option>
+            <option value="45-59">45-59</option><option value="60+">60+</option>
+          </select>
+        </label>
+        <label>Gender (Optional)
+          <select name="gender">
+            <option value="Prefer not to say">Prefer not to say</option>
+            <option value="Female">Female</option><option value="Male">Male</option><option value="Non-binary">Non-binary</option>
+          </select>
+        </label>
+        <label>Occupation *
+          <select name="occupation" required>
+            <option value="">Select</option>
+            <option value="Student">Student</option><option value="Teacher">Teacher</option>
+            <option value="Working Professional">Working Professional</option><option value="Business Owner">Business Owner</option>
+            <option value="Homemaker">Homemaker</option><option value="Senior Citizen">Senior Citizen</option>
+          </select>
+        </label>
+        <label>Smartphone Brand *
+          <select name="smartphoneBrand" required>
+            <option value="">Select</option>
+            <option value="Samsung">Samsung</option><option value="Xiaomi / Redmi">Xiaomi / Redmi</option>
+            <option value="OnePlus">OnePlus</option><option value="Realme">Realme</option>
+            <option value="Vivo">Vivo</option><option value="Oppo">Oppo</option>
+            <option value="Google Pixel">Google Pixel</option><option value="Motorola">Motorola</option><option value="Other">Other</option>
+          </select>
+        </label>
+        <label>Years of Usage *
+          <select name="yearsOfUsage" required>
+            <option value="">Select</option>
+            <option value="Less than 1 year">Less than 1 year</option><option value="1-2 years">1-2 years</option>
+            <option value="3-5 years">3-5 years</option><option value="6-8 years">6-8 years</option><option value="More than 8 years">More than 8 years</option>
+          </select>
+        </label>
+        <label>Avg Daily Usage (hrs) *<input type="number" name="avgDailyHours" min="0.5" max="24" step="0.5" required /></label>
+        <label>Primary Purpose *
+          <select name="primaryPurpose" required>
+            <option value="">Select</option>
+            <option value="Education & Learning">Education &amp; Learning</option>
+            <option value="Work & Productivity">Work &amp; Productivity</option>
+            <option value="Communication & Social">Communication &amp; Social</option>
+            <option value="Entertainment & Media">Entertainment &amp; Media</option>
+            <option value="Business & Finance">Business &amp; Finance</option>
+            <option value="Daily Utilities & Information">Daily Utilities &amp; Information</option>
+          </select>
+        </label>
+        <label>Daily Edu/Work Hours *<input type="number" name="eduWorkHours" min="0" max="24" step="0.5" required /></label>
+        <label>Entertainment Hours *<input type="number" name="entertainmentHours" min="0" max="24" step="0.5" required /></label>
+        <label>Privacy Awareness *
+          <select name="privacyAwareness" required>
+            <option value="">Select</option>
+            <option value="High">High</option><option value="Moderate">Moderate</option><option value="Low">Low</option>
+          </select>
+        </label>
+        <div class="full-width">
+          <p class="field-label">Frequent Applications *</p>
+          <div class="checkbox-row">
+            <label><input type="checkbox" name="frequentApps" value="WhatsApp" /> WhatsApp</label>
+            <label><input type="checkbox" name="frequentApps" value="YouTube" /> YouTube</label>
+            <label><input type="checkbox" name="frequentApps" value="Instagram" /> Instagram</label>
+            <label><input type="checkbox" name="frequentApps" value="UPI / Payment Apps" /> UPI / Payment Apps</label>
+            <label><input type="checkbox" name="frequentApps" value="Google Classroom / Meet" /> Google Classroom / Meet</label>
+            <label><input type="checkbox" name="frequentApps" value="LinkedIn / Email" /> LinkedIn / Email</label>
+          </div>
+        </div>
+        <label class="full-width">Opinion on Excessive Usage *
+          <textarea name="excessiveUsageOpinion" rows="3" required minlength="10"></textarea>
+        </label>
+        <button type="submit" class="btn-primary">Submit Survey Response</button>
+        <p id="form-status" class="status-text"></p>
+      </form>
+    </section>
+
+    <section id="analytics" class="card">
+      <h2>Analytics Dashboard</h2>
+      <div class="charts-grid">
+        <div><canvas id="occChart"></canvas></div>
+        <div><canvas id="purposeChart"></canvas></div>
+      </div>
+    </section>
+
+    <section id="table" class="card">
+      <h2>Collected Data Table</h2>
+      <table>
+        <thead>
+          <tr><th>ID</th><th>Source</th><th>Age</th><th>Occupation</th><th>Brand</th><th>Daily Hrs</th><th>Purpose</th></tr>
+        </thead>
+        <tbody id="table-body"></tbody>
+      </table>
+    </section>
+
+    <section id="admin" class="card">
+      <h2>Admin Section</h2>
+      <div id="admin-login">
+        <input type="password" id="admin-passcode" placeholder="Enter admin passcode (12345)" />
+        <button type="button" id="admin-login-btn" class="btn-primary">Sign In</button>
+      </div>
+      <div id="admin-panel" hidden>
+        <button type="button" id="admin-export-btn" class="btn-primary">Export All Survey Responses (CSV)</button>
+        <button type="button" id="admin-restore-btn" class="btn-secondary">Restore Sample Demo Data</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
