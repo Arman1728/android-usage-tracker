@@ -10,13 +10,8 @@ import {
   User,
   Volume2,
 } from 'lucide-react';
-import {
-  DatasetCounts,
-  DatasetScope,
-  SecurityChallengeMode,
-  SecurityProtectionItem,
-} from '../types/survey';
-import { SecurityGate } from './SecurityGate';
+import { DatasetCounts, DatasetScope } from '../types/survey';
+import { apiFetch } from '../utils/apiClient';
 import {
   base64ToBytes,
   buildLiveWsUrl,
@@ -30,15 +25,6 @@ interface AiBotViewProps {
   counts: DatasetCounts;
   scope: DatasetScope;
   onScopeChange: (scope: DatasetScope) => void;
-  requireSiteGate: boolean;
-  securityToken: string | null;
-  onSecurityTokenIssued: (result: {
-    token: string;
-    expiresAt: number;
-    mode: SecurityChallengeMode;
-    protections?: SecurityProtectionItem[];
-  }) => void;
-  onSecurityInvalidated: () => void;
 }
 
 interface ChatMessage {
@@ -61,10 +47,6 @@ export const AiBotView: React.FC<AiBotViewProps> = ({
   counts,
   scope,
   onScopeChange,
-  requireSiteGate,
-  securityToken,
-  onSecurityTokenIssued,
-  onSecurityInvalidated,
 }) => {
   const [mode, setMode] = useState<BotMode>('text');
 
@@ -230,14 +212,6 @@ export const AiBotView: React.FC<AiBotViewProps> = ({
   const startVoiceSession = async () => {
     if (voiceStatus === 'connecting' || voiceStatus === 'connected') return;
 
-    if (requireSiteGate && !securityToken) {
-      setVoiceStatus('error');
-      setVoiceError(
-        'Please complete security verification above before starting a Voice Conversation.'
-      );
-      return;
-    }
-
     setVoiceError(null);
     setVoiceNotice(null);
     setVoiceStatus('connecting');
@@ -285,7 +259,7 @@ export const AiBotView: React.FC<AiBotViewProps> = ({
     }
 
     try {
-      const wsUrl = buildLiveWsUrl(window.location, scope, securityToken);
+      const wsUrl = buildLiveWsUrl(window.location, scope);
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
@@ -395,11 +369,6 @@ export const AiBotView: React.FC<AiBotViewProps> = ({
     const trimmed = rawText.trim();
     if (!trimmed || loading) return;
 
-    if (requireSiteGate && !securityToken) {
-      setError('Please complete security verification above before chatting with the AI Research Bot.');
-      return;
-    }
-
     // Build clean alternating history excluding un-answered failed user turns
     const priorHistory: Array<{ role: 'user' | 'model'; text: string }> = [];
     for (const msg of messages) {
@@ -434,16 +403,11 @@ export const AiBotView: React.FC<AiBotViewProps> = ({
     const timeoutId = window.setTimeout(() => controller.abort(), 50000);
 
     try {
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-      };
-      if (securityToken) {
-        headers['x-security-token'] = securityToken;
-      }
-
-      const res = await fetch('/api/ai/chat', {
+      const res = await apiFetch('/api/ai/chat', {
         method: 'POST',
-        headers,
+        headers: {
+          'Content-Type': 'application/json',
+        },
         signal: controller.signal,
         body: JSON.stringify({
           message: trimmed,
@@ -453,10 +417,6 @@ export const AiBotView: React.FC<AiBotViewProps> = ({
       });
 
       const data = (await res.json()) as { reply?: string; error?: string; code?: string };
-      if (res.status === 403 && data.code === 'SECURITY_VERIFICATION_REQUIRED') {
-        onSecurityInvalidated();
-        throw new Error('Your security verification expired. Please re-verify above.');
-      }
       if (!res.ok) {
         throw new Error(data.error || `Request failed (HTTP ${res.status})`);
       }
@@ -605,9 +565,6 @@ export const AiBotView: React.FC<AiBotViewProps> = ({
         </div>
       </section>
 
-      {requireSiteGate && !securityToken && (
-        <SecurityGate variant="inline" onVerified={onSecurityTokenIssued} />
-      )}
 
       {mode === 'voice' ? (
         <section className="theme-surface rounded-lg border p-6 space-y-5">

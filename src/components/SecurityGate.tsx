@@ -11,6 +11,7 @@ import {
   SecurityChallengeMode,
   SecurityProtectionItem,
 } from '../types/survey';
+import { apiFetch } from '../utils/apiClient';
 
 interface SecurityGateProps {
   variant?: 'fullscreen' | 'inline';
@@ -42,7 +43,7 @@ export const SecurityGate: React.FC<SecurityGateProps> = ({
     setLoadingChallenge(true);
     setError(null);
     try {
-      const res = await fetch(`/api/security/challenge?mode=${targetMode}`, {
+      const res = await apiFetch(`/api/security/challenge?mode=${targetMode}`, {
         cache: 'no-store',
       });
       if (!res.ok) {
@@ -78,7 +79,7 @@ export const SecurityGate: React.FC<SecurityGateProps> = ({
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch('/api/security/verify', {
+      const res = await apiFetch('/api/security/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

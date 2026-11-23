@@ -7,9 +7,16 @@ import { createServer as createViteServer } from 'vite';
 import {
   addWeeklyPhoto,
   clearSampleResponses,
+  createAuthSession,
+  createAuthUser,
+  deleteAuthSession,
   deleteChatBoardMessageById,
+  deleteOtherAuthSessions,
   deleteResponseById,
   deleteWeeklyPhoto,
+  getAuthSession,
+  getAuthUserByUsername,
+  getAuthUserCount,
   getChatBoardMessages,
   getCounts,
   getDb,
@@ -19,9 +26,32 @@ import {
   insertChatBoardMessage,
   insertSurveyResponse,
   restoreSampleResponses,
+  touchAuthSession,
+  updateAuthUserPassword,
   updateProjectSettings,
   updateWeeklyActivity,
 } from './server/db';
+import {
+  ABSOLUTE_SESSION_TTL_MS,
+  buildClearSessionCookieHeader,
+  buildSessionCookieHeader,
+  getEnvAuthCredential,
+  getIdleTimeoutMs,
+  hashPassword,
+  isHttpsRequest,
+  isTrustedMutationRequest,
+  parseCookieValue,
+  signSessionId,
+  timingSafeStringEqual,
+  verifyPassword,
+  verifySignedSessionCookie,
+} from './server/auth';
+import {
+  validateAutoAccountInput,
+  validateChangePasswordInput,
+  validateLoginInput,
+  validateRegisterInput,
+} from './src/utils/authLogic';
 import {
   computeActivityProgress,
   validatePhotoUpload,
@@ -40,26 +70,18 @@ import { attachLiveVoiceWebSocket } from './server/live';
 import {
   adminLoginLimiter,
   aiChatLimiter,
+  authLoginLimiter,
+  authRegisterLimiter,
   chatBoardLimiter,
-  createSecurityChallenge,
   getActiveProtections,
   getSecurityMetrics,
   recordBlockedBot,
   recordFailedAdminLogin,
   recordRateLimitHit,
-  revokeSecurityToken,
   surveySubmitLimiter,
   verifyAdminPasscode,
-  verifyLimiter,
-  verifySecurityChallenge,
-  verifySecurityToken,
 } from './server/security';
-import {
-  DatasetScope,
-  ProjectSettings,
-  SecurityChallengeMode,
-  SurveyInput,
-} from './src/types/survey';
+import { DatasetScope, ProjectSettings, SurveyInput } from './src/types/survey';
 
 dotenv.config();
 
@@ -142,34 +164,51 @@ function requireAdmin(
   next();
 }
 
-function requireSecurityToken(
+
+function requireAuthSession(
   req: express.Request,
   res: express.Response,
   next: express.NextFunction
 ): void {
-  const token = req.header('x-security-token');
-  const payload = verifySecurityToken(token);
-  if (!payload) {
+  const isMutation =
+    req.method === 'POST' ||
+    req.method === 'PUT' ||
+    req.method === 'PATCH' ||
+    req.method === 'DELETE';
+
+  if (isMutation && !isTrustedMutationRequest(req)) {
     res.status(403).json({
-      error: 'Security verification required. Please complete the human verification check.',
-      code: 'SECURITY_VERIFICATION_REQUIRED',
+      error: 'Cross-origin mutation request rejected.',
+      code: 'CSRF_ORIGIN_MISMATCH',
     });
     return;
   }
-  next();
-}
 
-function requireAiSecurityToken(
-  req: express.Request,
-  res: express.Response,
-  next: express.NextFunction
-): void {
-  const settings = getProjectSettings();
-  if (!settings.requireSiteGate) {
-    next();
+  const rawCookie = parseCookieValue(req.headers.cookie);
+  const sessionId = verifySignedSessionCookie(rawCookie);
+  const now = Date.now();
+  const idleTimeoutMs = getIdleTimeoutMs();
+  const https = isHttpsRequest(req);
+
+  const session = sessionId ? touchAuthSession(sessionId, now, idleTimeoutMs) : null;
+  if (!session) {
+    if (rawCookie) {
+      res.setHeader('Set-Cookie', buildClearSessionCookieHeader(https));
+    }
+    res.status(401).json({
+      error: 'Authentication required. Please log in to continue.',
+      code: 'AUTH_REQUIRED',
+    });
     return;
   }
-  requireSecurityToken(req, res, next);
+
+  res.locals.authSession = session;
+  const signed = signSessionId(session.sessionId);
+  res.setHeader(
+    'Set-Cookie',
+    buildSessionCookieHeader(signed, Math.ceil((session.expiresAt - now) / 1000), https)
+  );
+  next();
 }
 
 async function startServer() {
@@ -191,73 +230,363 @@ async function startServer() {
   });
 
   app.get('/api/health', (_req, res) => {
-    res.json({ ok: true, counts: getCounts() });
+    res.json({ ok: true });
   });
 
-  // Security verification & challenge endpoints
-  app.get('/api/security/status', (req, res) => {
-    const settings = getProjectSettings();
-    const verified = verifySecurityToken(req.header('x-security-token'));
-    res.json({
-      verified: Boolean(verified),
-      requireSiteGate: settings.requireSiteGate,
-      expiresAt: verified ? verified.exp : null,
-      mode: verified ? verified.mode : null,
-      protections: getActiveProtections(settings.requireSiteGate),
-    });
-  });
+  // Portal email + password authentication endpoints (HTTP-only session cookie + scrypt)
+  app.get('/api/auth/session', (req, res) => {
+    const envCred = getEnvAuthCredential();
+    const hasUsers = Boolean(envCred) || getAuthUserCount() > 0;
+    const rawCookie = parseCookieValue(req.headers.cookie);
+    const sessionId = verifySignedSessionCookie(rawCookie);
+    const now = Date.now();
+    const idleTimeoutMs = getIdleTimeoutMs();
+    const https = isHttpsRequest(req);
 
-  app.get('/api/security/challenge', (req, res) => {
-    const mode: SecurityChallengeMode = req.query.mode === 'math' ? 'math' : 'code';
-    const challenge = createSecurityChallenge(mode);
-    res.setHeader('Cache-Control', 'no-store');
-    res.json(challenge);
-  });
+    const shouldTouch = req.query.touch === '1';
+    const session = sessionId
+      ? shouldTouch
+        ? touchAuthSession(sessionId, now, idleTimeoutMs)
+        : getAuthSession(sessionId, now)
+      : null;
 
-  app.post('/api/security/verify', (req, res) => {
-    const ip = getClientIp(req);
-    const rate = verifyLimiter.consume(ip);
-    if (!rate.allowed) {
-      recordRateLimitHit();
-      res.setHeader('Retry-After', String(rate.retryAfterSeconds));
-      res.status(429).json({
-        error: `Too many verification attempts. Please wait ${rate.retryAfterSeconds}s and try again.`,
+    if (!session) {
+      if (rawCookie) {
+        res.setHeader('Set-Cookie', buildClearSessionCookieHeader(https));
+      }
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({
+        authenticated: false,
+        hasUsers,
+        user: null,
+        idleTimeoutMs,
+        expiresAt: null,
       });
       return;
     }
 
-    const body = (req.body || {}) as {
-      challengeId?: unknown;
-      answer?: unknown;
-      website?: unknown;
-    };
-    const result = verifySecurityChallenge({
-      challengeId: body.challengeId,
-      answer: body.answer,
-      honeypot: body.website,
-    });
+    if (shouldTouch) {
+      const signed = signSessionId(session.sessionId);
+      res.setHeader(
+        'Set-Cookie',
+        buildSessionCookieHeader(signed, Math.ceil((session.expiresAt - now) / 1000), https)
+      );
+    }
 
-    if (!result.ok) {
-      const errorStatus = 'status' in result ? result.status : 400;
-      const errorMessage = 'error' in result ? result.error : 'Verification failed.';
-      res.status(errorStatus).json({ error: errorMessage });
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+      authenticated: true,
+      hasUsers: true,
+      user: { username: session.username, role: session.role },
+      idleTimeoutMs,
+      expiresAt: session.expiresAt,
+    });
+  });
+
+  app.post('/api/auth/register', (req, res) => {
+    if (!isTrustedMutationRequest(req)) {
+      res.status(403).json({ error: 'Cross-origin request rejected.' });
       return;
     }
 
-    const settings = getProjectSettings();
-    res.json({
-      verified: true,
-      token: result.token,
-      expiresAt: result.expiresAt,
-      mode: result.mode,
-      protections: getActiveProtections(settings.requireSiteGate),
+    const ip = getClientIp(req);
+    const lock = authLoginLimiter.isBlocked(`register:${ip}`);
+    if (lock.blocked) {
+      recordRateLimitHit();
+      res.setHeader('Retry-After', String(lock.retryAfterSeconds));
+      res.status(429).json({
+        error: `Too many registration attempts. Please wait ${lock.retryAfterSeconds}s and try again.`,
+      });
+      return;
+    }
+
+    const check = validateRegisterInput(req.body);
+    if (!check.valid || !check.email || !check.password) {
+      authLoginLimiter.consume(`register:${ip}`);
+      res.status(400).json({ error: check.error || 'Please enter a valid email and password.' });
+      return;
+    }
+
+    const envCred = getEnvAuthCredential();
+    if (envCred && timingSafeStringEqual(check.email, envCred.username)) {
+      authLoginLimiter.consume(`register:${ip}`);
+      res.status(409).json({
+        error: 'An account with this email already exists. Please sign in instead.',
+      });
+      return;
+    }
+
+    const passwordHash = hashPassword(check.password);
+    const created = createAuthUser(check.email, passwordHash);
+    if (!created.created || !created.user) {
+      authLoginLimiter.consume(`register:${ip}`);
+      res.status(409).json({
+        error: 'An account with this email already exists. Please sign in instead.',
+      });
+      return;
+    }
+
+    authLoginLimiter.reset(`register:${ip}`);
+    const now = Date.now();
+    const idleTimeoutMs = getIdleTimeoutMs();
+    const sessionId = crypto.randomUUID();
+    const session = createAuthSession({
+      sessionId,
+      username: created.user.username,
+      role: created.user.role,
+      now,
+      idleTimeoutMs,
+      maxTtlMs: ABSOLUTE_SESSION_TTL_MS,
+    });
+
+    const https = isHttpsRequest(req);
+    const signed = signSessionId(sessionId);
+    res.setHeader(
+      'Set-Cookie',
+      buildSessionCookieHeader(signed, Math.ceil(idleTimeoutMs / 1000), https)
+    );
+    res.status(201).json({
+      authenticated: true,
+      hasUsers: true,
+      user: created.user,
+      idleTimeoutMs,
+      expiresAt: session.expiresAt,
     });
   });
 
-  app.post('/api/security/revoke', (req, res) => {
-    revokeSecurityToken(req.header('x-security-token'));
+  app.post('/api/auth/login', (req, res) => {
+    if (!isTrustedMutationRequest(req)) {
+      res.status(403).json({ error: 'Cross-origin request rejected.' });
+      return;
+    }
+
+    const ip = getClientIp(req);
+    const lockStatus = authLoginLimiter.isBlocked(ip);
+    if (lockStatus.blocked) {
+      recordRateLimitHit();
+      res.setHeader('Retry-After', String(lockStatus.retryAfterSeconds));
+      res.status(429).json({
+        error: `Too many failed log in attempts. Please wait ${lockStatus.retryAfterSeconds}s and try again.`,
+      });
+      return;
+    }
+
+    const parsed = validateLoginInput(req.body);
+    if (!parsed.valid || !parsed.identifier || !parsed.password) {
+      authLoginLimiter.consume(ip);
+      res.status(401).json({ error: 'Invalid username/email or password' });
+      return;
+    }
+
+    const envCred = getEnvAuthCredential();
+    let authenticatedUser: { username: string; role: string } | null = null;
+
+    if (envCred && timingSafeStringEqual(parsed.identifier, envCred.username)) {
+      const passMatches = envCred.passwordHash
+        ? verifyPassword(parsed.password, envCred.passwordHash)
+        : Boolean(
+            envCred.plainPassword &&
+              timingSafeStringEqual(parsed.password, envCred.plainPassword)
+          );
+      if (!passMatches) {
+        const attempt = authLoginLimiter.consume(ip);
+        if (!attempt.allowed) {
+          res.setHeader('Retry-After', String(attempt.retryAfterSeconds));
+          res.status(429).json({
+            error: `Too many failed log in attempts. Locked for ${attempt.retryAfterSeconds}s.`,
+          });
+          return;
+        }
+        res.status(401).json({ error: 'Invalid username/email or password' });
+        return;
+      }
+      authenticatedUser = { username: envCred.username, role: 'researcher' };
+    }
+
+    if (!authenticatedUser) {
+      const storedUser = getAuthUserByUsername(parsed.identifier);
+      if (storedUser) {
+        if (!verifyPassword(parsed.password, storedUser.passwordHash)) {
+          const attempt = authLoginLimiter.consume(ip);
+          if (!attempt.allowed) {
+            res.setHeader('Retry-After', String(attempt.retryAfterSeconds));
+            res.status(429).json({
+              error: `Too many failed log in attempts. Locked for ${attempt.retryAfterSeconds}s.`,
+            });
+            return;
+          }
+          res.status(401).json({ error: 'Invalid username/email or password' });
+          return;
+        }
+        authenticatedUser = { username: storedUser.username, role: storedUser.role };
+      } else if (!parsed.identifier.includes('@')) {
+        const attempt = authLoginLimiter.consume(ip);
+        if (!attempt.allowed) {
+          res.setHeader('Retry-After', String(attempt.retryAfterSeconds));
+          res.status(429).json({
+            error: `Too many failed log in attempts. Locked for ${attempt.retryAfterSeconds}s.`,
+          });
+          return;
+        }
+        res.status(401).json({ error: 'Invalid username/email or password' });
+        return;
+      } else {
+        const regLimit = authRegisterLimiter.consume(`auto-reg:${ip}`);
+        if (!regLimit.allowed) {
+          recordRateLimitHit();
+          res.setHeader('Retry-After', String(regLimit.retryAfterSeconds));
+          res.status(429).json({
+            error: `Too many log in attempts. Please wait ${regLimit.retryAfterSeconds}s and try again.`,
+          });
+          return;
+        }
+
+        const regCheck = validateAutoAccountInput({
+          email: parsed.identifier,
+          password: parsed.password,
+        });
+        if (!regCheck.valid || !regCheck.email || !regCheck.password) {
+          res.status(400).json({
+            error: regCheck.error || 'Please enter a valid email address and password.',
+          });
+          return;
+        }
+
+        const passwordHash = hashPassword(regCheck.password);
+        const created = createAuthUser(regCheck.email, passwordHash);
+        if (!created.created || !created.user) {
+          res.status(401).json({ error: 'Invalid username/email or password' });
+          return;
+        }
+        authenticatedUser = created.user;
+      }
+    }
+
+    authLoginLimiter.reset(ip);
+    const now = Date.now();
+    const idleTimeoutMs = getIdleTimeoutMs();
+    const sessionId = crypto.randomUUID();
+    const session = createAuthSession({
+      sessionId,
+      username: authenticatedUser.username,
+      role: authenticatedUser.role,
+      now,
+      idleTimeoutMs,
+      maxTtlMs: ABSOLUTE_SESSION_TTL_MS,
+    });
+
+    const https = isHttpsRequest(req);
+    const signed = signSessionId(sessionId);
+    res.setHeader(
+      'Set-Cookie',
+      buildSessionCookieHeader(signed, Math.ceil(idleTimeoutMs / 1000), https)
+    );
+    res.json({
+      authenticated: true,
+      hasUsers: true,
+      user: authenticatedUser,
+      idleTimeoutMs,
+      expiresAt: session.expiresAt,
+    });
+  });
+
+  app.post('/api/auth/logout', (req, res) => {
+    if (!isTrustedMutationRequest(req)) {
+      res.status(403).json({ error: 'Cross-origin request rejected.' });
+      return;
+    }
+
+    const rawCookie = parseCookieValue(req.headers.cookie);
+    const sessionId = verifySignedSessionCookie(rawCookie);
+    if (sessionId) {
+      deleteAuthSession(sessionId);
+    }
+    const https = isHttpsRequest(req);
+    res.setHeader('Set-Cookie', buildClearSessionCookieHeader(https));
     res.json({ ok: true });
   });
+
+  app.post('/api/auth/ping', requireAuthSession, (req, res) => {
+    const rawCookie = parseCookieValue(req.headers.cookie);
+    const sessionId = verifySignedSessionCookie(rawCookie);
+    const session = sessionId ? getAuthSession(sessionId) : null;
+    res.json({
+      ok: true,
+      expiresAt: session?.expiresAt ?? null,
+    });
+  });
+
+  app.post('/api/auth/change-password', requireAuthSession, (req, res) => {
+    const session = res.locals.authSession as
+      | { sessionId: string; username: string; role: string }
+      | undefined;
+    if (!session) {
+      res.status(401).json({ error: 'Authentication required.' });
+      return;
+    }
+
+    const rateKey = `pw:${session.username.toLowerCase()}:${getClientIp(req)}`;
+    const lockStatus = authLoginLimiter.isBlocked(rateKey);
+    if (lockStatus.blocked) {
+      recordRateLimitHit();
+      res.setHeader('Retry-After', String(lockStatus.retryAfterSeconds));
+      res.status(429).json({
+        error: `Too many password change attempts. Please wait ${lockStatus.retryAfterSeconds}s and try again.`,
+      });
+      return;
+    }
+
+    const check = validateChangePasswordInput(req.body);
+    if (!check.valid || !check.currentPassword || !check.newPassword) {
+      res.status(400).json({ error: check.error || 'Invalid password input.' });
+      return;
+    }
+
+    const storedUser = getAuthUserByUsername(session.username);
+    if (!storedUser) {
+      res.status(400).json({
+        error: 'Environment-configured account passwords must be updated in server settings.',
+      });
+      return;
+    }
+
+    if (!verifyPassword(check.currentPassword, storedUser.passwordHash)) {
+      const attempt = authLoginLimiter.consume(rateKey);
+      if (!attempt.allowed) {
+        res.setHeader('Retry-After', String(attempt.retryAfterSeconds));
+        res.status(429).json({
+          error: `Too many incorrect current password attempts. Locked for ${attempt.retryAfterSeconds}s.`,
+        });
+        return;
+      }
+      res.status(401).json({ error: 'Current password is incorrect.' });
+      return;
+    }
+
+    const updated = updateAuthUserPassword(
+      storedUser.username,
+      hashPassword(check.newPassword)
+    );
+    if (!updated) {
+      res.status(500).json({ error: 'Unable to update password right now.' });
+      return;
+    }
+
+    deleteOtherAuthSessions(storedUser.username, session.sessionId);
+    authLoginLimiter.reset(rateKey);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ ok: true, message: 'Password updated successfully.' });
+  });
+
+  // Require valid authenticated portal session on all protected backend APIs
+  app.use('/api', (req, res, next) => {
+    if (req.path === '/health' || req.path.startsWith('/auth/')) {
+      next();
+      return;
+    }
+    requireAuthSession(req, res, next);
+  });
+
 
   app.get('/api/settings', (_req, res) => {
     res.json({ settings: getProjectSettings() });
@@ -309,7 +638,7 @@ async function startServer() {
     });
   });
 
-  app.post('/api/responses', requireSecurityToken, (req, res) => {
+  app.post('/api/responses', (req, res) => {
     const ip = getClientIp(req);
     const rate = surveySubmitLimiter.consume(ip);
     if (!rate.allowed) {
@@ -365,7 +694,7 @@ async function startServer() {
     });
   });
 
-  app.put('/api/activity/:weekNumber', requireSecurityToken, (req, res) => {
+  app.put('/api/activity/:weekNumber', (req, res) => {
     const weekNumber = Number(req.params.weekNumber);
     if (!Number.isInteger(weekNumber) || weekNumber < 1 || weekNumber > 6) {
       res.status(400).json({ error: 'Week number must be between 1 and 6.' });
@@ -395,7 +724,6 @@ async function startServer() {
   app.post(
     '/api/activity/:weekNumber/photos',
     express.json({ limit: '8mb' }),
-    requireSecurityToken,
     (req, res) => {
       const weekNumber = Number(req.params.weekNumber);
       if (!Number.isInteger(weekNumber) || weekNumber < 1 || weekNumber > 6) {
@@ -425,7 +753,7 @@ async function startServer() {
     }
   );
 
-  app.delete('/api/activity/:weekNumber/photos/:photoId', requireSecurityToken, (req, res) => {
+  app.delete('/api/activity/:weekNumber/photos/:photoId', (req, res) => {
     const weekNumber = Number(req.params.weekNumber);
     const photoId = String(req.params.photoId || '').trim();
     if (!Number.isInteger(weekNumber) || weekNumber < 1 || weekNumber > 6 || !photoId) {
@@ -447,7 +775,7 @@ async function startServer() {
     });
   });
 
-  app.post('/api/ai/chat', requireAiSecurityToken, async (req, res) => {
+  app.post('/api/ai/chat', async (req, res) => {
     const ip = getClientIp(req);
     const rate = aiChatLimiter.consume(ip);
     if (!rate.allowed) {
@@ -497,7 +825,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/admin/login', requireSecurityToken, (req, res) => {
+  app.post('/api/admin/login', (req, res) => {
     const ip = getClientIp(req);
     const lockStatus = adminLoginLimiter.isBlocked(ip);
     if (lockStatus.blocked) {
@@ -570,7 +898,7 @@ async function startServer() {
     res.json({ messages: getChatBoardMessages(100) });
   });
 
-  app.post('/api/chatboard', requireAiSecurityToken, (req, res) => {
+  app.post('/api/chatboard', (req, res) => {
     const ip = getClientIp(req);
     const rate = chatBoardLimiter.consume(ip);
     if (!rate.allowed) {

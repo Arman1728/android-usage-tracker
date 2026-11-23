@@ -15,12 +15,11 @@ import {
   DatasetCounts,
   DatasetScope,
   ProjectSettings,
-  SecurityChallengeMode,
   SecurityMetricsSnapshot,
   SecurityProtectionItem,
   SurveyResponse,
 } from '../types/survey';
-import { SecurityGate } from './SecurityGate';
+import { apiFetch } from '../utils/apiClient';
 
 interface AdminViewProps {
   responses: SurveyResponse[];
@@ -29,14 +28,6 @@ interface AdminViewProps {
   onRefresh: () => Promise<void>;
   adminToken: string | null;
   onAdminTokenChange: (token: string | null) => void;
-  securityToken: string | null;
-  onSecurityTokenIssued: (result: {
-    token: string;
-    expiresAt: number;
-    mode: SecurityChallengeMode;
-    protections?: SecurityProtectionItem[];
-  }) => void;
-  onSecurityInvalidated: () => void;
 }
 
 export const AdminView: React.FC<AdminViewProps> = ({
@@ -46,9 +37,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
   onRefresh,
   adminToken,
   onAdminTokenChange,
-  securityToken,
-  onSecurityTokenIssued,
-  onSecurityInvalidated,
 }) => {
   const [passcode, setPasscode] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
@@ -59,7 +47,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const [collegeName, setCollegeName] = useState(settings.collegeName);
   const [department, setDepartment] = useState(settings.department);
   const [academicBatch, setAcademicBatch] = useState(settings.academicBatch);
-  const [requireSiteGate, setRequireSiteGate] = useState<boolean>(settings.requireSiteGate);
 
   const [securityMetrics, setSecurityMetrics] = useState<SecurityMetricsSnapshot | null>(null);
   const [protections, setProtections] = useState<SecurityProtectionItem[]>([]);
@@ -68,18 +55,16 @@ export const AdminView: React.FC<AdminViewProps> = ({
     setCollegeName(settings.collegeName);
     setDepartment(settings.department);
     setAcademicBatch(settings.academicBatch);
-    setRequireSiteGate(settings.requireSiteGate);
   }, [
     settings.collegeName,
     settings.department,
     settings.academicBatch,
-    settings.requireSiteGate,
   ]);
 
   const fetchSecurityTelemetry = useCallback(async () => {
     if (!adminToken) return;
     try {
-      const res = await fetch('/api/admin/security', {
+      const res = await apiFetch('/api/admin/security', {
         headers: { Authorization: `Bearer ${adminToken}` },
       });
       if (res.status === 401) {
@@ -109,27 +94,17 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
-    if (!securityToken) {
-      setAuthError('Please complete the human security verification check above before signing in.');
-      return;
-    }
 
     setBusy(true);
     try {
-      const res = await fetch('/api/admin/login', {
+      const res = await apiFetch('/api/admin/login', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-security-token': securityToken,
         },
         body: JSON.stringify({ passcode }),
       });
       const data = await res.json();
-      if (res.status === 403 && data.code === 'SECURITY_VERIFICATION_REQUIRED') {
-        onSecurityInvalidated();
-        setAuthError('Security verification expired. Please re-verify above and try again.');
-        return;
-      }
       if (!res.ok) {
         setAuthError(data.error || 'Authentication failed.');
         return;
@@ -145,7 +120,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
 
   const handleLogout = async () => {
     if (adminToken) {
-      await fetch('/api/admin/logout', {
+      await apiFetch('/api/admin/logout', {
         method: 'POST',
         headers: { Authorization: `Bearer ${adminToken}` },
       }).catch(() => {});
@@ -160,13 +135,13 @@ export const AdminView: React.FC<AdminViewProps> = ({
     setBusy(true);
     setStatusMessage(null);
     try {
-      const res = await fetch('/api/admin/settings', {
+      const res = await apiFetch('/api/admin/settings', {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${adminToken}`,
         },
-        body: JSON.stringify({ collegeName, department, academicBatch, requireSiteGate }),
+        body: JSON.stringify({ collegeName, department, academicBatch }),
       });
       if (res.status === 401) {
         void handleLogout();
@@ -178,11 +153,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
         setStatusMessage(data.error || 'Failed to update settings.');
         return;
       }
-      setStatusMessage(
-        `Saved settings for "${data.settings.collegeName}" (Entry Security Gate: ${
-          data.settings.requireSiteGate ? 'Enabled' : 'Disabled'
-        }).`
-      );
+      setStatusMessage(`Saved settings for "${data.settings.collegeName}".`);
       await onRefresh();
       await fetchSecurityTelemetry();
     } finally {
@@ -195,7 +166,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
     setBusy(true);
     setStatusMessage(null);
     try {
-      const res = await fetch(`/api/admin/responses/${id}`, {
+      const res = await apiFetch(`/api/admin/responses/${id}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${adminToken}` },
       });
@@ -218,7 +189,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
     setBusy(true);
     setStatusMessage(null);
     try {
-      const res = await fetch('/api/admin/sample/restore', {
+      const res = await apiFetch('/api/admin/sample/restore', {
         method: 'POST',
         headers: { Authorization: `Bearer ${adminToken}` },
       });
@@ -239,7 +210,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
     setBusy(true);
     setStatusMessage(null);
     try {
-      const res = await fetch('/api/admin/sample/clear', {
+      const res = await apiFetch('/api/admin/sample/clear', {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${adminToken}` },
       });
@@ -260,7 +231,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
     setBusy(true);
     setStatusMessage(null);
     try {
-      const res = await fetch(`/api/admin/export/csv?scope=${exportScope}`, {
+      const res = await apiFetch(`/api/admin/export/csv?scope=${exportScope}`, {
         headers: { Authorization: `Bearer ${adminToken}` },
       });
       if (res.status === 401) {
@@ -298,19 +269,8 @@ export const AdminView: React.FC<AdminViewProps> = ({
             <h1 className="text-xl font-bold">Admin Survey Management</h1>
           </div>
           <p className="theme-muted mt-2 text-sm">
-            Authorized researchers can review individual submissions, remove invalid entries, configure website security verification, update College/Institution details, and export all collected survey fields as CSV.
+            Authorized researchers can review individual submissions, remove invalid entries, update College/Institution details, and export all collected survey fields as CSV.
           </p>
-
-          <div className="mt-5">
-            {securityToken ? (
-              <div className="flex items-center gap-2 rounded-md border border-emerald-300 bg-emerald-50 px-3.5 py-2 text-xs font-medium text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-200">
-                <ShieldCheck className="h-4 w-4 shrink-0 text-emerald-600" />
-                <span>Human Security Verification Passed · Brute-Force Protection Active</span>
-              </div>
-            ) : (
-              <SecurityGate variant="inline" onVerified={onSecurityTokenIssued} />
-            )}
-          </div>
 
           <form onSubmit={handleLogin} className="mt-5 space-y-4">
             <div>
@@ -338,7 +298,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
 
             <button
               type="submit"
-              disabled={busy || !securityToken}
+              disabled={busy}
               className="theme-btn-primary w-full rounded-md px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
             >
               {busy ? 'Verifying...' : 'Sign In to Admin Panel'}
@@ -467,11 +427,11 @@ export const AdminView: React.FC<AdminViewProps> = ({
         <div className="flex items-center gap-2">
           <Building2 className="theme-accent-text h-4 w-4" />
           <h2 className="theme-heading text-base font-semibold">
-            College, Institution & Security Gate Settings
+            College &amp; Institution Settings
           </h2>
         </div>
         <p className="theme-muted mt-1 text-xs">
-          Customize the college name, department, batch, and site-wide entry security verification requirement.
+          Customize the college name, department, and academic batch displayed across the portal.
         </p>
 
         <form onSubmit={handleSaveSettings} className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -512,25 +472,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
             />
           </div>
 
-          <div className="sm:col-span-3">
-            <label className="theme-surface-muted flex cursor-pointer items-center justify-between gap-4 rounded-md border px-4 py-3 text-xs">
-              <div>
-                <p className="theme-heading font-semibold">
-                  Require Website Entry Security Verification Gate
-                </p>
-                <p className="theme-muted mt-0.5">
-                  When enabled, all new visitors must pass the human verification check before viewing the portal. Survey submissions and Admin sign-in remain protected either way.
-                </p>
-              </div>
-              <input
-                type="checkbox"
-                checked={requireSiteGate}
-                onChange={(e) => setRequireSiteGate(e.target.checked)}
-                className="h-4 w-4 shrink-0 rounded"
-              />
-            </label>
-          </div>
-
           <div className="sm:col-span-3 flex justify-end">
             <button
               type="submit"
@@ -538,7 +479,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
               className="theme-btn-primary inline-flex items-center gap-2 rounded-md px-4 py-2 text-xs font-semibold disabled:opacity-60"
             >
               <Save className="h-3.5 w-3.5" />
-              <span>Save College & Security Settings</span>
+              <span>Save College Settings</span>
             </button>
           </div>
         </form>

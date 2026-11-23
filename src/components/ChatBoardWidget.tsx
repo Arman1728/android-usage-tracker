@@ -17,15 +17,13 @@ import {
   DatasetScope,
   SectionId,
 } from '../types/survey';
+import { apiFetch } from '../utils/apiClient';
 
 interface ChatBoardWidgetProps {
   counts: DatasetCounts;
   scope: DatasetScope;
-  requireSiteGate: boolean;
-  securityToken: string | null;
   adminToken: string | null;
   onNavigate: (section: SectionId) => void;
-  onSecurityInvalidated: () => void;
 }
 
 interface QuickAiMessage {
@@ -44,11 +42,8 @@ const QUICK_AI_PROMPTS = [
 export const ChatBoardWidget: React.FC<ChatBoardWidgetProps> = ({
   counts,
   scope,
-  requireSiteGate,
-  securityToken,
   adminToken,
   onNavigate,
-  onSecurityInvalidated,
 }) => {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<BoardTab>('ai');
@@ -77,7 +72,7 @@ export const ChatBoardWidget: React.FC<ChatBoardWidgetProps> = ({
     setBoardLoading(true);
     setBoardError(null);
     try {
-      const res = await fetch('/api/chatboard');
+      const res = await apiFetch('/api/chatboard');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as { messages?: ChatBoardMessage[] };
       setBoardMessages(Array.isArray(data.messages) ? data.messages : []);
@@ -117,11 +112,6 @@ export const ChatBoardWidget: React.FC<ChatBoardWidgetProps> = ({
     const trimmed = rawText.trim();
     if (!trimmed || aiLoading) return;
 
-    if (requireSiteGate && !securityToken) {
-      setAiError('Security session expired. Refresh or re-verify to use AI chat.');
-      return;
-    }
-
     const priorHistory: Array<{ role: 'user' | 'model'; text: string }> = [];
     for (const msg of aiMessages) {
       const last = priorHistory[priorHistory.length - 1];
@@ -149,16 +139,11 @@ export const ChatBoardWidget: React.FC<ChatBoardWidgetProps> = ({
     const timeoutId = window.setTimeout(() => controller.abort(), 50000);
 
     try {
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-      };
-      if (securityToken) {
-        headers['x-security-token'] = securityToken;
-      }
-
-      const res = await fetch('/api/ai/chat', {
+      const res = await apiFetch('/api/ai/chat', {
         method: 'POST',
-        headers,
+        headers: {
+          'Content-Type': 'application/json',
+        },
         signal: controller.signal,
         body: JSON.stringify({
           message: trimmed,
@@ -168,10 +153,6 @@ export const ChatBoardWidget: React.FC<ChatBoardWidgetProps> = ({
       });
 
       const data = (await res.json()) as { reply?: string; error?: string; code?: string };
-      if (res.status === 403 && data.code === 'SECURITY_VERIFICATION_REQUIRED') {
-        onSecurityInvalidated();
-        throw new Error('Security verification expired. Please re-verify your session.');
-      }
       if (!res.ok) {
         throw new Error(data.error || `Request failed (HTTP ${res.status})`);
       }
@@ -204,25 +185,15 @@ export const ChatBoardWidget: React.FC<ChatBoardWidgetProps> = ({
     e.preventDefault();
     if (posting) return;
 
-    if (requireSiteGate && !securityToken) {
-      setBoardError('Security verification required before posting to the community board.');
-      return;
-    }
-
     setBoardError(null);
     setPosting(true);
 
     try {
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-      };
-      if (securityToken) {
-        headers['x-security-token'] = securityToken;
-      }
-
-      const res = await fetch('/api/chatboard', {
+      const res = await apiFetch('/api/chatboard', {
         method: 'POST',
-        headers,
+        headers: {
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({
           senderName: senderName.trim(),
           roleTag,
@@ -236,12 +207,6 @@ export const ChatBoardWidget: React.FC<ChatBoardWidgetProps> = ({
         error?: string;
         code?: string;
       };
-
-      if (res.status === 403 && data.code === 'SECURITY_VERIFICATION_REQUIRED') {
-        onSecurityInvalidated();
-        setBoardError('Security session expired. Please re-verify your session.');
-        return;
-      }
 
       if (!res.ok) {
         setBoardError(data.error || 'Could not post message.');
@@ -262,7 +227,7 @@ export const ChatBoardWidget: React.FC<ChatBoardWidgetProps> = ({
   const handleDeleteBoardMessage = async (id: number) => {
     if (!adminToken) return;
     try {
-      const res = await fetch(`/api/admin/chatboard/${id}`, {
+      const res = await apiFetch(`/api/admin/chatboard/${id}`, {
         method: 'DELETE',
         headers: {
           Authorization: `Bearer ${adminToken}`,

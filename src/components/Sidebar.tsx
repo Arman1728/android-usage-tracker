@@ -8,6 +8,8 @@ import {
   ClipboardList,
   FileSearch,
   Home,
+  KeyRound,
+  LogOut,
   Palette,
   ShieldAlert,
   ShieldCheck,
@@ -15,7 +17,7 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import { DatasetCounts, SectionId, THEME_OPTIONS, ThemeId } from '../types/survey';
+import { AuthUser, DatasetCounts, SectionId, THEME_OPTIONS, ThemeId } from '../types/survey';
 
 interface SidebarProps {
   activeSection: SectionId;
@@ -23,6 +25,9 @@ interface SidebarProps {
   counts: DatasetCounts;
   theme: ThemeId;
   onThemeChange: (theme: ThemeId) => void;
+  authUser: AuthUser;
+  onOpenChangePassword: () => void;
+  onLogout: () => void;
   mobileOpen: boolean;
   onCloseMobile: () => void;
 }
@@ -57,6 +62,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   counts,
   theme,
   onThemeChange,
+  authUser,
+  onOpenChangePassword,
+  onLogout,
   mobileOpen,
   onCloseMobile,
 }) => {
@@ -157,6 +165,35 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <div className="mt-1 flex items-center justify-between">
           <span>Sample demo rows</span>
           <span className="font-mono text-slate-300 tabular-nums">{counts.sampleCount}</span>
+        </div>
+        <div className="mt-3 space-y-2 border-t border-white/10 pt-2.5">
+          <div className="truncate text-[11px] text-slate-300">
+            Signed in: <strong className="text-white">{authUser.username}</strong>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => {
+                onCloseMobile();
+                onOpenChangePassword();
+              }}
+              className="inline-flex flex-1 items-center justify-center gap-1 rounded border border-white/20 bg-white/10 px-2 py-1 text-[11px] font-semibold text-white hover:bg-white/20 whitespace-nowrap"
+            >
+              <KeyRound className="h-3 w-3 shrink-0" />
+              <span>Change Password</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                onCloseMobile();
+                onLogout();
+              }}
+              className="inline-flex items-center justify-center gap-1 rounded border border-white/20 bg-white/10 px-2 py-1 text-[11px] font-semibold text-white hover:bg-white/20 whitespace-nowrap shrink-0"
+            >
+              <LogOut className="h-3 w-3 shrink-0" />
+              <span>Logout</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>

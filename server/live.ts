@@ -1,8 +1,8 @@
 import http from 'node:http';
 import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
 import { WebSocket, WebSocketServer } from 'ws';
-import { getCounts, getProjectSettings, getResponses } from './db';
-import { verifySecurityToken } from './security';
+import { getAuthSession, getCounts, getProjectSettings, getResponses } from './db';
+import { parseCookieValue, verifySignedSessionCookie } from './auth';
 import { DatasetScope } from '../src/types/survey';
 import { buildResearchContextSummary, buildSystemInstruction } from '../src/utils/aiContext';
 
@@ -18,16 +18,6 @@ function parseScopeFromUrl(rawUrl: string | undefined): DatasetScope {
     // Fallback to all
   }
   return 'all';
-}
-
-function parseTokenFromUrl(rawUrl: string | undefined): string | null {
-  if (!rawUrl) return null;
-  try {
-    const parsed = new URL(rawUrl, 'http://localhost');
-    return parsed.searchParams.get('token');
-  } catch {
-    return null;
-  }
 }
 
 function sendJson(ws: WebSocket, payload: Record<string, unknown>): void {
@@ -63,10 +53,11 @@ export function attachLiveVoiceWebSocket(server: http.Server): WebSocketServer {
       return;
     }
 
-    const settings = getProjectSettings();
-    const token = parseTokenFromUrl(request.url);
-    if (settings.requireSiteGate && !verifySecurityToken(token)) {
-      socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+    const rawSessionCookie = parseCookieValue(request.headers.cookie);
+    const sessionId = verifySignedSessionCookie(rawSessionCookie);
+    const authSession = sessionId ? getAuthSession(sessionId) : null;
+    if (!authSession) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
       return;
     }

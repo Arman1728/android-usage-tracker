@@ -357,3 +357,17 @@ export interface ChatBoardMessage {
   message: string;
   createdAt: string;
 }
+
+export interface AuthUser {
+  username: string;
+  role: string;
+}
+
+export interface AuthSessionStatus {
+  authenticated: boolean;
+  hasUsers: boolean;
+  user: AuthUser | null;
+  idleTimeoutMs: number;
+  expiresAt: number | null;
+}
+

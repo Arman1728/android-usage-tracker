@@ -4,26 +4,26 @@ import { AdminView } from './components/AdminView';
 import { AiBotView } from './components/AiBotView';
 import { AnalyticsView } from './components/AnalyticsView';
 import { CategoriesView } from './components/CategoriesView';
+import { ChangePasswordModal } from './components/ChangePasswordModal';
 import { ChatBoardWidget } from './components/ChatBoardWidget';
 import { ConclusionView } from './components/ConclusionView';
 import { DataTableView } from './components/DataTableView';
 import { FindingsView } from './components/FindingsView';
 import { HomeView } from './components/HomeView';
+import { LoginView } from './components/LoginView';
 import { MyActivityView } from './components/MyActivityView';
 import { RecommendationsView } from './components/RecommendationsView';
-import { SecurityGate } from './components/SecurityGate';
 import { Sidebar } from './components/Sidebar';
 import { SurveyFormView } from './components/SurveyFormView';
 import { TopBar } from './components/TopBar';
 import {
   ActivityProgressSummary,
+  AuthSessionStatus,
+  AuthUser,
   DatasetCounts,
   DatasetScope,
   ProjectSettings,
   SectionId,
-  SecurityChallengeMode,
-  SecurityProtectionItem,
-  SecurityStatusResponse,
   SurveyResponse,
   TEAM_MEMBERS,
   THEME_OPTIONS,
@@ -31,6 +31,7 @@ import {
   WeeklyActivity,
 } from './types/survey';
 import { computeActivityProgress, DEFAULT_SIX_WEEK_ACTIVITIES } from './utils/activityLogic';
+import { AUTH_EXPIRED_EVENT, apiFetch } from './utils/apiClient';
 import { computeAnalytics, generateFindings } from './utils/surveyLogic';
 
 const VALID_SECTIONS: SectionId[] = [
@@ -52,7 +53,7 @@ const DEFAULT_SETTINGS: ProjectSettings = {
   collegeName: 'Sree Venkateswara College of Engineering',
   department: 'Department of Computer Science & Engineering (B.Tech CSE)',
   academicBatch: '2024–2028 · Community Service Project (CSP)',
-  requireSiteGate: true,
+  requireSiteGate: false,
 };
 
 function getInitialSection(): SectionId {
@@ -73,15 +74,14 @@ export default function App() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [theme, setTheme] = useState<ThemeId>(getInitialTheme);
 
-  // Security verification & admin session tokens kept strictly in React memory
-  const [securityChecking, setSecurityChecking] = useState(true);
-  const [requireSiteGate, setRequireSiteGate] = useState(true);
-  const [securityToken, setSecurityToken] = useState<string | null>(null);
-  const [securityExpiresAt, setSecurityExpiresAt] = useState<number | null>(null);
-  const [securityMode, setSecurityMode] = useState<SecurityChallengeMode | null>(null);
-  const [protections, setProtections] = useState<SecurityProtectionItem[]>([]);
-  const [forceGateVisible, setForceGateVisible] = useState(false);
+  // Portal user authentication state (session backed by HTTP-only server cookie)
+  const [authChecking, setAuthChecking] = useState(true);
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [authHasUsers, setAuthHasUsers] = useState(true);
+  const [authIdleTimeoutMs, setAuthIdleTimeoutMs] = useState(30 * 60 * 1000);
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
   const [adminToken, setAdminToken] = useState<string | null>(null);
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
 
   const [allResponses, setAllResponses] = useState<SurveyResponse[]>([]);
   const [counts, setCounts] = useState<DatasetCounts>({
@@ -107,46 +107,115 @@ export default function App() {
     localStorage.setItem('csp_theme', theme);
   }, [theme]);
 
+  const clearClientSessionState = useCallback((notice: string | null = null) => {
+    setAuthUser(null);
+    setAdminToken(null);
+    setChangePasswordOpen(false);
+    setAllResponses([]);
+    setCounts({ total: 0, realCount: 0, sampleCount: 0 });
+    setLoading(true);
+    setAuthNotice(notice);
+    setActiveSection('home');
+    if (window.location.hash) {
+      window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+    }
+  }, []);
+
+  const handleLogout = useCallback(
+    async (notice: string | null = null) => {
+      if (adminToken) {
+        await apiFetch('/api/admin/logout', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${adminToken}` },
+        }).catch(() => {});
+      }
+      await apiFetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
+      clearClientSessionState(notice);
+    },
+    [adminToken, clearClientSessionState]
+  );
+
+  // Verify HTTP-only cookie session on initial load
   useEffect(() => {
     let active = true;
-    const initSecurity = async () => {
+    const checkSession = async () => {
       try {
-        const [statusRes, settingsRes] = await Promise.all([
-          fetch('/api/security/status'),
-          fetch('/api/settings'),
-        ]);
+        const res = await apiFetch('/api/auth/session');
         if (!active) return;
-
-        if (statusRes.ok) {
-          const status = (await statusRes.json()) as SecurityStatusResponse;
-          setRequireSiteGate(status.requireSiteGate);
-          setProtections(status.protections || []);
-        }
-        if (settingsRes.ok) {
-          const settingsData = (await settingsRes.json()) as { settings?: ProjectSettings };
-          if (settingsData.settings) {
-            setSettings(settingsData.settings);
-            setRequireSiteGate(settingsData.settings.requireSiteGate);
+        if (res.ok) {
+          const data = (await res.json()) as AuthSessionStatus;
+          setAuthHasUsers(Boolean(data.hasUsers));
+          if (data.idleTimeoutMs) {
+            setAuthIdleTimeoutMs(data.idleTimeoutMs);
+          }
+          if (data.authenticated && data.user) {
+            setAuthUser(data.user);
+          } else {
+            setAuthUser(null);
           }
         }
       } catch {
-        // Default safely to gate required if status check fails temporarily
+        if (active) setAuthUser(null);
       } finally {
-        if (active) setSecurityChecking(false);
+        if (active) setAuthChecking(false);
       }
     };
-    void initSecurity();
+    void checkSession();
     return () => {
       active = false;
     };
   }, []);
 
+  // Listen for global 401 AUTH_REQUIRED expirations
+  useEffect(() => {
+    const onExpired = () => {
+      clearClientSessionState('Your session expired due to inactivity. Please log in again.');
+    };
+    window.addEventListener(AUTH_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, onExpired);
+  }, [clearClientSessionState]);
+
+  // Automatic inactivity timeout & sliding activity ping while logged in
+  useEffect(() => {
+    if (!authUser) return;
+    let lastActivityAt = Date.now();
+    let lastPingAt = Date.now();
+
+    const recordActivity = () => {
+      const now = Date.now();
+      lastActivityAt = now;
+      if (now - lastPingAt >= 60_000) {
+        lastPingAt = now;
+        void apiFetch('/api/auth/ping', { method: 'POST' }).catch(() => {});
+      }
+    };
+
+    const events: Array<keyof WindowEventMap> = ['pointerdown', 'keydown', 'scroll'];
+    for (const evt of events) {
+      window.addEventListener(evt, recordActivity, { passive: true });
+    }
+
+    const timer = window.setInterval(() => {
+      if (Date.now() - lastActivityAt >= authIdleTimeoutMs) {
+        void handleLogout('Your session expired due to inactivity. Please log in again.');
+      }
+    }, 15_000);
+
+    return () => {
+      for (const evt of events) {
+        window.removeEventListener(evt, recordActivity);
+      }
+      window.clearInterval(timer);
+    };
+  }, [authUser, authIdleTimeoutMs, handleLogout]);
+
   const fetchSurveyData = useCallback(async () => {
+    if (!authUser) return;
     try {
       setLoadError(null);
       const [res, activityRes] = await Promise.all([
-        fetch('/api/responses?scope=all'),
-        fetch('/api/activity'),
+        apiFetch('/api/responses?scope=all'),
+        apiFetch('/api/activity'),
       ]);
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);
@@ -156,7 +225,6 @@ export default function App() {
       setCounts(data.counts || { total: 0, realCount: 0, sampleCount: 0 });
       if (data.settings) {
         setSettings(data.settings);
-        setRequireSiteGate(Boolean(data.settings.requireSiteGate));
       }
       if (activityRes.ok) {
         const actData = (await activityRes.json()) as {
@@ -173,18 +241,17 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, []);
-
-  const gateBlocked = (requireSiteGate && !securityToken) || forceGateVisible;
+  }, [authUser]);
 
   useEffect(() => {
-    if (!securityChecking && !gateBlocked) {
+    if (authUser) {
       void fetchSurveyData();
     }
-  }, [securityChecking, gateBlocked, fetchSurveyData]);
+  }, [authUser, fetchSurveyData]);
 
   useEffect(() => {
     const onHashChange = () => {
+      if (!authUser) return;
       const hash = window.location.hash.replace('#', '') as SectionId;
       if (VALID_SECTIONS.includes(hash)) {
         setActiveSection(hash);
@@ -192,53 +259,21 @@ export default function App() {
     };
     window.addEventListener('hashchange', onHashChange);
     return () => window.removeEventListener('hashchange', onHashChange);
-  }, []);
+  }, [authUser]);
 
-  const handleSecurityVerified = useCallback(
-    (result: {
-      token: string;
-      expiresAt: number;
-      mode: SecurityChallengeMode;
-      protections?: SecurityProtectionItem[];
-    }) => {
-      setSecurityToken(result.token);
-      setSecurityExpiresAt(result.expiresAt);
-      setSecurityMode(result.mode);
-      if (result.protections) {
-        setProtections(result.protections);
-      }
-      setForceGateVisible(false);
-    },
-    []
-  );
-
-  const handleSecurityInvalidated = useCallback(() => {
-    setSecurityToken(null);
-    setSecurityExpiresAt(null);
-    setSecurityMode(null);
-  }, []);
-
-  const handleLockAndReverify = useCallback(async () => {
-    if (securityToken) {
-      await fetch('/api/security/revoke', {
-        method: 'POST',
-        headers: { 'x-security-token': securityToken },
-      }).catch(() => {});
+  const handleAuthSuccess = useCallback((session: AuthSessionStatus) => {
+    setAuthHasUsers(true);
+    setAuthNotice(null);
+    if (session.idleTimeoutMs) {
+      setAuthIdleTimeoutMs(session.idleTimeoutMs);
     }
-    if (adminToken) {
-      await fetch('/api/admin/logout', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${adminToken}` },
-      }).catch(() => {});
-    }
-    setSecurityToken(null);
-    setSecurityExpiresAt(null);
-    setSecurityMode(null);
-    setAdminToken(null);
-    setForceGateVisible(true);
-  }, [securityToken, adminToken]);
+    setAuthUser(session.user);
+    setActiveSection('home');
+    window.location.hash = 'home';
+  }, []);
 
   const handleNavigate = (section: SectionId) => {
+    if (!authUser) return;
     setActiveSection(section);
     if (window.location.hash !== `#${section}`) {
       window.location.hash = section;
@@ -277,23 +312,23 @@ export default function App() {
     [scopedResponses]
   );
 
-  if (securityChecking) {
+  if (authChecking) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[var(--bg-canvas)] px-4 text-[var(--text-body)]">
         <div className="theme-surface rounded-lg border px-6 py-4 text-sm font-medium">
-          Initializing security verification...
+          Checking authentication session...
         </div>
       </div>
     );
   }
 
-  if (gateBlocked) {
+  if (!authUser) {
     return (
-      <SecurityGate
-        variant="fullscreen"
+      <LoginView
+        hasUsers={authHasUsers}
         collegeName={settings.collegeName}
-        protections={protections}
-        onVerified={handleSecurityVerified}
+        expiredMessage={authNotice}
+        onAuthenticated={handleAuthSuccess}
       />
     );
   }
@@ -306,6 +341,9 @@ export default function App() {
         counts={counts}
         theme={theme}
         onThemeChange={setTheme}
+        authUser={authUser}
+        onOpenChangePassword={() => setChangePasswordOpen(true)}
+        onLogout={() => void handleLogout(null)}
         mobileOpen={mobileOpen}
         onCloseMobile={() => setMobileOpen(false)}
       />
@@ -315,11 +353,9 @@ export default function App() {
           activeSection={activeSection}
           onOpenMobileMenu={() => setMobileOpen(true)}
           onNavigate={handleNavigate}
-          securityVerified={Boolean(securityToken)}
-          securityExpiresAt={securityExpiresAt}
-          securityMode={securityMode}
-          protections={protections}
-          onLockAndReverify={() => void handleLockAndReverify()}
+          authUser={authUser}
+          onOpenChangePassword={() => setChangePasswordOpen(true)}
+          onLogout={() => void handleLogout(null)}
         />
 
         <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 sm:px-6 lg:px-8">
@@ -377,9 +413,6 @@ export default function App() {
                   weeks={weeklyActivities}
                   summary={activitySummary}
                   settings={settings}
-                  securityToken={securityToken}
-                  onSecurityTokenIssued={handleSecurityVerified}
-                  onSecurityInvalidated={handleSecurityInvalidated}
                   onActivitiesUpdated={(weeks, summary) => {
                     setWeeklyActivities(weeks);
                     setActivitySummary(summary);
@@ -390,9 +423,6 @@ export default function App() {
                 <SurveyFormView
                   onSubmitted={fetchSurveyData}
                   onNavigate={handleNavigate}
-                  securityToken={securityToken}
-                  onSecurityTokenIssued={handleSecurityVerified}
-                  onSecurityInvalidated={handleSecurityInvalidated}
                 />
               )}
               {activeSection === 'analytics' && (
@@ -434,10 +464,6 @@ export default function App() {
                   counts={counts}
                   scope={scope}
                   onScopeChange={setScope}
-                  requireSiteGate={requireSiteGate}
-                  securityToken={securityToken}
-                  onSecurityTokenIssued={handleSecurityVerified}
-                  onSecurityInvalidated={handleSecurityInvalidated}
                 />
               )}
               {activeSection === 'admin' && (
@@ -448,9 +474,6 @@ export default function App() {
                   onRefresh={fetchSurveyData}
                   adminToken={adminToken}
                   onAdminTokenChange={setAdminToken}
-                  securityToken={securityToken}
-                  onSecurityTokenIssued={handleSecurityVerified}
-                  onSecurityInvalidated={handleSecurityInvalidated}
                 />
               )}
             </div>
@@ -472,11 +495,14 @@ export default function App() {
       <ChatBoardWidget
         counts={counts}
         scope={scope}
-        requireSiteGate={requireSiteGate}
-        securityToken={securityToken}
         adminToken={adminToken}
         onNavigate={handleNavigate}
-        onSecurityInvalidated={handleSecurityInvalidated}
+      />
+
+      <ChangePasswordModal
+        isOpen={changePasswordOpen}
+        username={authUser.username}
+        onClose={() => setChangePasswordOpen(false)}
       />
     </div>
   );

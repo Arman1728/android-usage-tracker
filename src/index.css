@@ -138,8 +138,8 @@
 
 @keyframes sectionEnter {
   from {
-    opacity: 0;
-    transform: translateY(6px);
+    opacity: 0.92;
+    transform: translateY(4px);
   }
   to {
     opacity: 1;

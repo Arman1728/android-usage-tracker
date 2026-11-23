@@ -1,4 +1,5 @@
 import React, { useRef, useState } from 'react';
+import { apiFetch } from '../utils/apiClient';
 import {
   Award,
   Calendar,
@@ -21,26 +22,15 @@ import {
   ActivityProgressSummary,
   ActivityStatus,
   ProjectSettings,
-  SecurityChallengeMode,
-  SecurityProtectionItem,
   WeeklyActivity,
   WeeklyPhoto,
 } from '../types/survey';
 import { ACTIVITY_STATUSES } from '../utils/activityLogic';
-import { SecurityGate } from './SecurityGate';
 
 interface MyActivityViewProps {
   weeks: WeeklyActivity[];
   summary: ActivityProgressSummary;
   settings: ProjectSettings;
-  securityToken: string | null;
-  onSecurityTokenIssued: (result: {
-    token: string;
-    expiresAt: number;
-    mode: SecurityChallengeMode;
-    protections?: SecurityProtectionItem[];
-  }) => void;
-  onSecurityInvalidated: () => void;
   onActivitiesUpdated: (weeks: WeeklyActivity[], summary: ActivityProgressSummary) => void;
 }
 
@@ -102,9 +92,6 @@ export const MyActivityView: React.FC<MyActivityViewProps> = ({
   weeks,
   summary,
   settings,
-  securityToken,
-  onSecurityTokenIssued,
-  onSecurityInvalidated,
   onActivitiesUpdated,
 }) => {
   const [editingWeek, setEditingWeek] = useState<number | null>(null);
@@ -162,25 +149,16 @@ export const MyActivityView: React.FC<MyActivityViewProps> = ({
 
   const handleSaveWeek = async (weekNumber: number) => {
     if (!draft) return;
-    if (!securityToken) {
-      setWeekBanner(
-        weekNumber,
-        'error',
-        'Please complete security verification above before saving activity changes.'
-      );
-      return;
-    }
 
     clearWeekBanner(weekNumber);
     setSavingWeek(weekNumber);
 
     try {
       const cleanedActivities = draft.activities.map((a) => a.trim()).filter(Boolean);
-      const res = await fetch(`/api/activity/${weekNumber}`, {
+      const res = await apiFetch(`/api/activity/${weekNumber}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          'x-security-token': securityToken,
         },
         body: JSON.stringify({
           title: draft.title.trim(),
@@ -199,12 +177,6 @@ export const MyActivityView: React.FC<MyActivityViewProps> = ({
         error?: string;
         code?: string;
       };
-
-      if (res.status === 403 && data.code === 'SECURITY_VERIFICATION_REQUIRED') {
-        onSecurityInvalidated();
-        setWeekBanner(weekNumber, 'error', 'Security session expired. Please re-verify above.');
-        return;
-      }
 
       if (!res.ok || !data.weeks || !data.summary) {
         setWeekBanner(weekNumber, 'error', data.error || 'Failed to save weekly activity.');
@@ -229,15 +201,6 @@ export const MyActivityView: React.FC<MyActivityViewProps> = ({
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
-
-    if (!securityToken) {
-      setWeekBanner(
-        weekNumber,
-        'error',
-        'Please complete security verification above before uploading photographs.'
-      );
-      return;
-    }
 
     if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
       setWeekBanner(weekNumber, 'error', 'Only JPG, PNG, or WebP photograph files are allowed.');
@@ -265,11 +228,10 @@ export const MyActivityView: React.FC<MyActivityViewProps> = ({
       });
 
       const caption = (photoCaptions[weekNumber] || '').trim();
-      const res = await fetch(`/api/activity/${weekNumber}/photos`, {
+      const res = await apiFetch(`/api/activity/${weekNumber}/photos`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-security-token': securityToken,
         },
         body: JSON.stringify({
           fileName: file.name,
@@ -284,12 +246,6 @@ export const MyActivityView: React.FC<MyActivityViewProps> = ({
         error?: string;
         code?: string;
       };
-
-      if (res.status === 403 && data.code === 'SECURITY_VERIFICATION_REQUIRED') {
-        onSecurityInvalidated();
-        setWeekBanner(weekNumber, 'error', 'Security session expired. Please re-verify above.');
-        return;
-      }
 
       if (!res.ok || !data.weeks || !data.summary) {
         setWeekBanner(weekNumber, 'error', data.error || 'Unable to upload photograph.');
@@ -311,26 +267,14 @@ export const MyActivityView: React.FC<MyActivityViewProps> = ({
   };
 
   const handleDeletePhoto = async (weekNumber: number, photoId: string) => {
-    if (!securityToken) {
-      setWeekBanner(
-        weekNumber,
-        'error',
-        'Please complete security verification above before removing photographs.'
-      );
-      return;
-    }
-
     clearWeekBanner(weekNumber);
     setDeletingPhotoId(photoId);
 
     try {
-      const res = await fetch(
+      const res = await apiFetch(
         `/api/activity/${weekNumber}/photos/${encodeURIComponent(photoId)}`,
         {
           method: 'DELETE',
-          headers: {
-            'x-security-token': securityToken,
-          },
         }
       );
 
@@ -340,12 +284,6 @@ export const MyActivityView: React.FC<MyActivityViewProps> = ({
         error?: string;
         code?: string;
       };
-
-      if (res.status === 403 && data.code === 'SECURITY_VERIFICATION_REQUIRED') {
-        onSecurityInvalidated();
-        setWeekBanner(weekNumber, 'error', 'Security session expired. Please re-verify above.');
-        return;
-      }
 
       if (!res.ok || !data.weeks || !data.summary) {
         setWeekBanner(weekNumber, 'error', data.error || 'Failed to delete photograph.');
@@ -510,9 +448,6 @@ export const MyActivityView: React.FC<MyActivityViewProps> = ({
         </div>
       </section>
 
-      {!securityToken && (
-        <SecurityGate variant="inline" onVerified={onSecurityTokenIssued} />
-      )}
 
       {/* Vertical Six-Week Timeline */}
       <section aria-label="Six-Week CSP Timeline" className="relative space-y-6">

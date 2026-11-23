@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { hashPassword } from './auth';
 import { SAMPLE_DEMO_RECORDS } from '../src/data/sampleSeed';
 import { DEFAULT_SIX_WEEK_ACTIVITIES } from '../src/utils/activityLogic';
 import {
@@ -142,6 +143,24 @@ export function getDb(): DatabaseSync {
       message TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS auth_users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'researcher',
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS auth_sessions (
+      session_id TEXT PRIMARY KEY,
+      username TEXT NOT NULL,
+      role TEXT NOT NULL,
+      last_activity_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      max_expires_at INTEGER NOT NULL,
+      created_at TEXT NOT NULL
+    );
   `);
 
   // Safe migration for existing SQLite files created before college_name column
@@ -202,6 +221,29 @@ export function getDb(): DatabaseSync {
         week.updatedAt
       );
     }
+  }
+
+  const adminSeeded = db
+    .prepare("SELECT value FROM app_meta WHERE key = 'admin_saad_seeded_v1'")
+    .get() as { value: string } | undefined;
+
+  if (!adminSeeded) {
+    const initialUsername = (process.env.INITIAL_ADMIN_USERNAME || 'SaadArman').trim();
+    const initialPassword = process.env.INITIAL_ADMIN_PASSWORD || 'Saad@2026!Portal';
+    const existingAdmin = db
+      .prepare('SELECT id FROM auth_users WHERE LOWER(username) = ?')
+      .get(initialUsername.toLowerCase()) as { id: number } | undefined;
+
+    if (!existingAdmin && initialUsername && initialPassword) {
+      const passwordHash = hashPassword(initialPassword);
+      db.prepare(
+        'INSERT INTO auth_users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)'
+      ).run(initialUsername, passwordHash, 'admin', new Date().toISOString());
+    }
+
+    db.prepare(
+      "INSERT OR REPLACE INTO app_meta (key, value) VALUES ('admin_saad_seeded_v1', '1')"
+    ).run();
   }
 
   return db;
@@ -596,3 +638,206 @@ export function deleteChatBoardMessageById(id: number): boolean {
   const result = database.prepare('DELETE FROM csp_chat_messages WHERE id = ?').run(id);
   return Number(result.changes) > 0;
 }
+
+export interface StoredAuthUser {
+  id: number;
+  username: string;
+  passwordHash: string;
+  role: string;
+  createdAt: string;
+}
+
+export interface StoredAuthSession {
+  sessionId: string;
+  username: string;
+  role: string;
+  lastActivityAt: number;
+  expiresAt: number;
+  maxExpiresAt: number;
+  createdAt: string;
+}
+
+export function getAuthUserCount(): number {
+  const database = getDb();
+  const row = database.prepare('SELECT COUNT(*) as cnt FROM auth_users').get() as { cnt: number };
+  return Number(row.cnt);
+}
+
+export function getAuthUserByUsername(username: string): StoredAuthUser | null {
+  const database = getDb();
+  const normalized = username.trim().toLowerCase();
+  const row = database
+    .prepare('SELECT id, username, password_hash, role, created_at FROM auth_users WHERE LOWER(username) = ?')
+    .get(normalized) as
+    | { id: number; username: string; password_hash: string; role: string; created_at: string }
+    | undefined;
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    username: row.username,
+    passwordHash: row.password_hash,
+    role: row.role,
+    createdAt: row.created_at,
+  };
+}
+
+export function createAuthUser(
+  email: string,
+  passwordHash: string
+): { created: boolean; conflict?: boolean; user?: { username: string; role: string } } {
+  const database = getDb();
+  const normalized = email.trim().toLowerCase();
+  const existing = getAuthUserByUsername(normalized);
+  if (existing) {
+    return { created: false, conflict: true };
+  }
+
+  const createdAt = new Date().toISOString();
+  try {
+    database
+      .prepare('INSERT INTO auth_users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)')
+      .run(normalized, passwordHash, 'member', createdAt);
+    return { created: true, user: { username: normalized, role: 'member' } };
+  } catch {
+    return { created: false, conflict: true };
+  }
+}
+
+export function createInitialAuthUser(
+  username: string,
+  passwordHash: string
+): { created: boolean; user?: { username: string; role: string } } {
+  const database = getDb();
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    const countRow = database.prepare('SELECT COUNT(*) as cnt FROM auth_users').get() as { cnt: number };
+    if (Number(countRow.cnt) > 0) {
+      database.exec('ROLLBACK');
+      return { created: false };
+    }
+    const normalized = username.trim().toLowerCase();
+    const createdAt = new Date().toISOString();
+    database
+      .prepare('INSERT INTO auth_users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)')
+      .run(normalized, passwordHash, 'researcher', createdAt);
+    database.exec('COMMIT');
+    return { created: true, user: { username: normalized, role: 'researcher' } };
+  } catch (err) {
+    try {
+      database.exec('ROLLBACK');
+    } catch {
+      // Ignore rollback errors
+    }
+    throw err;
+  }
+}
+
+export function createAuthSession(input: {
+  sessionId: string;
+  username: string;
+  role: string;
+  now: number;
+  idleTimeoutMs: number;
+  maxTtlMs: number;
+}): StoredAuthSession {
+  const database = getDb();
+  const expiresAt = input.now + input.idleTimeoutMs;
+  const maxExpiresAt = input.now + input.maxTtlMs;
+  const createdAt = new Date(input.now).toISOString();
+
+  database.prepare('DELETE FROM auth_sessions WHERE expires_at <= ? OR max_expires_at <= ?').run(input.now, input.now);
+  database
+    .prepare(
+      'INSERT INTO auth_sessions (session_id, username, role, last_activity_at, expires_at, max_expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    )
+    .run(input.sessionId, input.username, input.role, input.now, expiresAt, maxExpiresAt, createdAt);
+
+  return {
+    sessionId: input.sessionId,
+    username: input.username,
+    role: input.role,
+    lastActivityAt: input.now,
+    expiresAt,
+    maxExpiresAt,
+    createdAt,
+  };
+}
+
+export function getAuthSession(sessionId: string, now = Date.now()): StoredAuthSession | null {
+  const database = getDb();
+  const row = database
+    .prepare(
+      'SELECT session_id, username, role, last_activity_at, expires_at, max_expires_at, created_at FROM auth_sessions WHERE session_id = ?'
+    )
+    .get(sessionId) as
+    | {
+        session_id: string;
+        username: string;
+        role: string;
+        last_activity_at: number;
+        expires_at: number;
+        max_expires_at: number;
+        created_at: string;
+      }
+    | undefined;
+
+  if (!row) return null;
+  if (Number(row.expires_at) <= now || Number(row.max_expires_at) <= now) {
+    database.prepare('DELETE FROM auth_sessions WHERE session_id = ?').run(sessionId);
+    return null;
+  }
+
+  return {
+    sessionId: row.session_id,
+    username: row.username,
+    role: row.role,
+    lastActivityAt: Number(row.last_activity_at),
+    expiresAt: Number(row.expires_at),
+    maxExpiresAt: Number(row.max_expires_at),
+    createdAt: row.created_at,
+  };
+}
+
+export function touchAuthSession(
+  sessionId: string,
+  now: number,
+  idleTimeoutMs: number
+): StoredAuthSession | null {
+  const existing = getAuthSession(sessionId, now);
+  if (!existing) return null;
+
+  const nextExpiresAt = Math.min(existing.maxExpiresAt, now + idleTimeoutMs);
+  const database = getDb();
+  database
+    .prepare('UPDATE auth_sessions SET last_activity_at = ?, expires_at = ? WHERE session_id = ?')
+    .run(now, nextExpiresAt, sessionId);
+
+  return {
+    ...existing,
+    lastActivityAt: now,
+    expiresAt: nextExpiresAt,
+  };
+}
+
+export function updateAuthUserPassword(username: string, newPasswordHash: string): boolean {
+  const database = getDb();
+  const normalized = username.trim().toLowerCase();
+  const result = database
+    .prepare('UPDATE auth_users SET password_hash = ? WHERE LOWER(username) = ?')
+    .run(newPasswordHash, normalized);
+  return Number(result.changes) > 0;
+}
+
+export function deleteAuthSession(sessionId: string): void {
+  const database = getDb();
+  database.prepare('DELETE FROM auth_sessions WHERE session_id = ?').run(sessionId);
+}
+
+export function deleteOtherAuthSessions(username: string, keepSessionId: string): void {
+  const database = getDb();
+  const normalized = username.trim().toLowerCase();
+  database
+    .prepare('DELETE FROM auth_sessions WHERE LOWER(username) = ? AND session_id != ?')
+    .run(normalized, keepSessionId);
+}
+

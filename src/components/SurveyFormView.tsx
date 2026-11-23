@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { CheckCircle2, ShieldCheck } from 'lucide-react';
+import { CheckCircle2 } from 'lucide-react';
 import {
   AGE_GROUPS,
   APPLICATION_OPTIONS,
@@ -11,25 +11,15 @@ import {
   PRIVACY_AWARENESS_LEVELS,
   SectionId,
   SMARTPHONE_BRANDS,
-  SecurityChallengeMode,
-  SecurityProtectionItem,
   SurveyInput,
   USAGE_DURATIONS,
 } from '../types/survey';
+import { apiFetch } from '../utils/apiClient';
 import { validateSurveyInput } from '../utils/surveyLogic';
-import { SecurityGate } from './SecurityGate';
 
 interface SurveyFormViewProps {
   onSubmitted: () => Promise<void>;
   onNavigate: (section: SectionId) => void;
-  securityToken: string | null;
-  onSecurityTokenIssued: (result: {
-    token: string;
-    expiresAt: number;
-    mode: SecurityChallengeMode;
-    protections?: SecurityProtectionItem[];
-  }) => void;
-  onSecurityInvalidated: () => void;
 }
 
 const INITIAL_FORM: SurveyInput = {
@@ -51,9 +41,6 @@ const INITIAL_FORM: SurveyInput = {
 export const SurveyFormView: React.FC<SurveyFormViewProps> = ({
   onSubmitted,
   onNavigate,
-  securityToken,
-  onSecurityTokenIssued,
-  onSecurityInvalidated,
 }) => {
   const [form, setForm] = useState<SurveyInput>(INITIAL_FORM);
   const [customCollege, setCustomCollege] = useState('');
@@ -108,27 +95,16 @@ export const SurveyFormView: React.FC<SurveyFormViewProps> = ({
       return;
     }
 
-    if (!securityToken) {
-      setServerError('Please complete the security verification check below before submitting.');
-      return;
-    }
-
     setSubmitting(true);
     try {
-      const res = await fetch('/api/responses', {
+      const res = await apiFetch('/api/responses', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-security-token': securityToken,
         },
         body: JSON.stringify({ ...payload, _hp: honeypot }),
       });
       const data = await res.json();
-      if (res.status === 403 && data.code === 'SECURITY_VERIFICATION_REQUIRED') {
-        onSecurityInvalidated();
-        setServerError('Your security verification expired. Please solve the check below and resubmit.');
-        return;
-      }
       if (!res.ok) {
         if (data.errors) setErrors(data.errors);
         setServerError(data.error || 'Could not submit survey response.');
@@ -528,19 +504,6 @@ export const SurveyFormView: React.FC<SurveyFormViewProps> = ({
           />
         </div>
 
-        <div className="border-t border-[var(--border-subtle)] pt-5">
-          {securityToken ? (
-            <div className="flex items-center gap-2.5 rounded-md border border-emerald-300 bg-emerald-50 px-4 py-2.5 text-xs font-medium text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-200">
-              <ShieldCheck className="h-4 w-4 shrink-0 text-emerald-600" />
-              <span>
-                Security Verification Active — Your session is verified against automated spam submissions.
-              </span>
-            </div>
-          ) : (
-            <SecurityGate variant="inline" onVerified={onSecurityTokenIssued} />
-          )}
-        </div>
-
         <div className="flex flex-wrap items-center justify-end gap-3 border-t border-[var(--border-subtle)] pt-5">
           <button
             type="button"
@@ -556,7 +519,7 @@ export const SurveyFormView: React.FC<SurveyFormViewProps> = ({
           </button>
           <button
             type="submit"
-            disabled={submitting || !securityToken}
+            disabled={submitting}
             className="theme-btn-primary rounded-md px-6 py-2.5 text-sm font-semibold transition-colors disabled:opacity-60 whitespace-nowrap"
           >
             {submitting ? 'Submitting...' : 'Submit Survey Response'}
