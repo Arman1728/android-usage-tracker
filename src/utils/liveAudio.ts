@@ -60,3 +60,25 @@ export function buildLiveWsUrl(
   }
   return base;
 }
+
+export function resampleFloat32(
+  input: Float32Array,
+  fromRate: number,
+  toRate: number
+): Float32Array {
+  if (fromRate === toRate || input.length === 0 || fromRate <= 0 || toRate <= 0) {
+    return input;
+  }
+  const ratio = fromRate / toRate;
+  const outputLength = Math.max(1, Math.round(input.length / ratio));
+  const output = new Float32Array(outputLength);
+  for (let i = 0; i < outputLength; i += 1) {
+    const srcPos = i * ratio;
+    const idx = Math.floor(srcPos);
+    const frac = srcPos - idx;
+    const s0 = input[Math.min(idx, input.length - 1)];
+    const s1 = input[Math.min(idx + 1, input.length - 1)];
+    output[i] = s0 + (s1 - s0) * frac;
+  }
+  return output;
+}

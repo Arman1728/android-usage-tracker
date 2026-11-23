@@ -6,6 +6,7 @@ import {
   bytesToBase64,
   float32ToPcm16Bytes,
   pcm16BytesToFloat32,
+  resampleFloat32,
 } from './liveAudio';
 
 test('float32ToPcm16Bytes and pcm16BytesToFloat32 round-trip and clamp values', () => {
@@ -38,4 +39,11 @@ test('buildLiveWsUrl derives ws/wss protocol from page location', () => {
     buildLiveWsUrl({ protocol: 'http:', host: 'localhost:3000' }, 'all'),
     'ws://localhost:3000/api/live?scope=all'
   );
+});
+
+test('resampleFloat32 downsamples 48kHz buffers cleanly to 16kHz', () => {
+  const input = new Float32Array(480).fill(0.25);
+  const resampled = resampleFloat32(input, 48000, 16000);
+  assert.equal(resampled.length, 160);
+  assert.ok(Math.abs(resampled[0] - 0.25) < 0.0001);
 });

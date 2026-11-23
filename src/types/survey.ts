@@ -288,6 +288,7 @@ export type SectionId =
   | 'home'
   | 'about'
   | 'categories'
+  | 'activity'
   | 'survey'
   | 'analytics'
   | 'table'
@@ -297,6 +298,38 @@ export type SectionId =
   | 'assistant'
   | 'admin';
 
+export type ActivityStatus = 'Not Started' | 'In Progress' | 'Completed';
+
+export interface WeeklyPhoto {
+  id: string;
+  fileName: string;
+  caption: string;
+  dataUrl: string;
+  uploadedAt: string;
+}
+
+export interface WeeklyActivity {
+  weekNumber: number;
+  title: string;
+  description: string;
+  activities: string[];
+  startDate: string;
+  endDate: string;
+  status: ActivityStatus;
+  reflection: string;
+  photos: WeeklyPhoto[];
+  updatedAt: string;
+}
+
+export interface ActivityProgressSummary {
+  totalWeeks: number;
+  completedCount: number;
+  inProgressCount: number;
+  notStartedCount: number;
+  percentComplete: number;
+  overallLabel: 'Not Started' | 'In Progress' | 'Completed';
+}
+
 export interface UserCategoryProfile {
   occupation: Occupation;
   ageTypical: string;
@@ -305,4 +338,22 @@ export interface UserCategoryProfile {
   primaryPurposes: string[];
   commonApps: string[];
   keyChallenge: string;
+}
+
+export const CHAT_BOARD_ROLES = [
+  'Student',
+  'Faculty',
+  'Community Respondent',
+  'CSP Team',
+  'Visitor',
+] as const;
+
+export type ChatBoardRole = (typeof CHAT_BOARD_ROLES)[number];
+
+export interface ChatBoardMessage {
+  id: number;
+  senderName: string;
+  roleTag: ChatBoardRole;
+  message: string;
+  createdAt: string;
 }

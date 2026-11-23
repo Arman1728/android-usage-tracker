@@ -63,8 +63,9 @@ export function attachLiveVoiceWebSocket(server: http.Server): WebSocketServer {
       return;
     }
 
+    const settings = getProjectSettings();
     const token = parseTokenFromUrl(request.url);
-    if (!verifySecurityToken(token)) {
+    if (settings.requireSiteGate && !verifySecurityToken(token)) {
       socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
       socket.destroy();
       return;
@@ -105,6 +106,13 @@ export function attachLiveVoiceWebSocket(server: http.Server): WebSocketServer {
 
     let liveSession: Awaited<ReturnType<typeof ai.live.connect>> | null = null;
     let closed = false;
+    let readySent = false;
+
+    const emitReady = () => {
+      if (readySent) return;
+      readySent = true;
+      sendJson(clientWs, { type: 'ready', model: LIVE_MODEL_ID, scope });
+    };
 
     const closeAll = () => {
       if (closed) return;
@@ -131,9 +139,12 @@ export function attachLiveVoiceWebSocket(server: http.Server): WebSocketServer {
         },
         callbacks: {
           onopen: () => {
-            sendJson(clientWs, { type: 'ready', model: LIVE_MODEL_ID, scope });
+            // Setup completion triggers ready via onmessage(setupComplete) or post-connect fallback
           },
           onmessage: (message: LiveServerMessage) => {
+            if (message.setupComplete) {
+              emitReady();
+            }
             const content = message.serverContent;
             if (!content) return;
 
@@ -169,14 +180,24 @@ export function attachLiveVoiceWebSocket(server: http.Server): WebSocketServer {
             }
           },
           onerror: (errEvent) => {
+            const formatted = formatLiveError(errEvent);
+            console.error('[LiveVoice] Gemini Live error:', formatted);
             sendJson(clientWs, {
               type: 'error',
-              error: formatLiveError(errEvent),
+              error: formatted,
             });
           },
-          onclose: () => {
+          onclose: (closeEvent) => {
+            console.log(
+              '[LiveVoice] Upstream closed:',
+              closeEvent?.code,
+              closeEvent?.reason || ''
+            );
             if (!closed) {
-              sendJson(clientWs, { type: 'closed' });
+              sendJson(clientWs, {
+                type: 'closed',
+                reason: closeEvent?.reason || undefined,
+              });
               if (clientWs.readyState === WebSocket.OPEN) {
                 clientWs.close();
               }
@@ -184,10 +205,13 @@ export function attachLiveVoiceWebSocket(server: http.Server): WebSocketServer {
           },
         },
       });
+      emitReady();
     } catch (err) {
+      const formatted = formatLiveError(err);
+      console.error('[LiveVoice] Connect failed:', formatted);
       sendJson(clientWs, {
         type: 'error',
-        error: formatLiveError(err),
+        error: formatted,
       });
       clientWs.close();
       return;
@@ -196,7 +220,11 @@ export function attachLiveVoiceWebSocket(server: http.Server): WebSocketServer {
     clientWs.on('message', (raw) => {
       if (!liveSession || closed) return;
       try {
-        const msg = JSON.parse(raw.toString()) as { audio?: string; text?: string };
+        const msg = JSON.parse(raw.toString()) as {
+          audio?: string;
+          text?: string;
+          audioEnd?: boolean;
+        };
         if (typeof msg.audio === 'string' && msg.audio.length > 0) {
           liveSession.sendRealtimeInput({
             audio: {
@@ -204,13 +232,23 @@ export function attachLiveVoiceWebSocket(server: http.Server): WebSocketServer {
               mimeType: 'audio/pcm;rate=16000',
             },
           });
-        } else if (typeof msg.text === 'string' && msg.text.trim()) {
+        } else if (msg.audioEnd) {
           liveSession.sendRealtimeInput({
-            text: msg.text.trim(),
+            audioStreamEnd: true,
+          });
+        } else if (typeof msg.text === 'string' && msg.text.trim()) {
+          liveSession.sendClientContent({
+            turns: [
+              {
+                role: 'user',
+                parts: [{ text: msg.text.trim() }],
+              },
+            ],
+            turnComplete: true,
           });
         }
-      } catch {
-        // Ignore malformed client frames
+      } catch (err) {
+        console.error('[LiveVoice] Failed forwarding client frame:', err);
       }
     });
 

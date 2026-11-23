@@ -167,7 +167,7 @@ export function buildSystemInstruction(contextSummary: string): string {
     'Rules:',
     '1. Ground every numeric claim strictly in the Live Research Context provided below. Never fabricate or extrapolate unrecorded survey numbers.',
     '2. Clearly note whether statistics reflect Real Submissions Only, Sample Demo Records Only, or the Combined Dataset based on the active scope.',
-    '3. Keep responses concise, structured with clean bullet points where helpful, and written in an objective academic/research tone.',
+    '3. Keep responses concise, structured with clean plain-text headings and hyphen bullets (- ) where helpful, without markdown asterisks (** or *) or hash headings (###), written in an objective academic/research tone.',
     '4. When listing project team members, always format them cleanly as "Name - RollNumber" without parentheses or extra role labels.',
     '',
     '=== LIVE RESEARCH CONTEXT ===',

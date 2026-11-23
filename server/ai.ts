@@ -6,7 +6,8 @@ import {
 } from '../src/utils/aiContext';
 import { DatasetCounts, DatasetScope, ProjectSettings, SurveyResponse } from '../src/types/survey';
 
-const MODEL_ID = 'gemini-4-hydrogen';
+const PRIMARY_MODEL_ID = 'gemini-4-hydrogen';
+const FALLBACK_MODEL_ID = 'gemini-3.1-flash-lite';
 
 export class AiServiceError extends Error {
   statusCode: number;
@@ -33,7 +34,7 @@ function getAiClient(): GoogleGenAI {
       headers: {
         'User-Agent': 'aistudio-build',
       },
-      timeout: 20000,
+      timeout: 15000,
     },
   });
 }
@@ -96,7 +97,12 @@ function extractStatusAndMessage(err: unknown): { status: number; message: strin
       message: rawMsg,
     };
   }
-  if (rawMsg.toLowerCase().includes('timeout') || rawMsg.toLowerCase().includes('aborted')) {
+  if (
+    rawStatus === 504 ||
+    rawMsg.toLowerCase().includes('timeout') ||
+    rawMsg.toLowerCase().includes('aborted') ||
+    rawMsg.toLowerCase().includes('deadline expired')
+  ) {
     return {
       status: 504,
       message: 'The Gemini AI service timed out while generating a response. Please try again.',
@@ -111,6 +117,31 @@ function extractStatusAndMessage(err: unknown): { status: number; message: strin
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function callCandidate(
+  ai: GoogleGenAI,
+  model: string,
+  thinkingLevel: ThinkingLevel,
+  contents: Content[],
+  systemInstruction: string
+): Promise<{ reply: string; model: string }> {
+  const response = await ai.models.generateContent({
+    model,
+    contents,
+    config: {
+      systemInstruction,
+      thinkingConfig: {
+        thinkingLevel,
+      },
+    },
+  });
+
+  const replyText = response.text?.trim();
+  if (!replyText) {
+    throw new AiServiceError('The AI model returned an empty response.', 502);
+  }
+  return { reply: replyText, model };
 }
 
 export async function generateResearchBotReply(params: {
@@ -141,40 +172,99 @@ export async function generateResearchBotReply(params: {
     },
   ];
 
-  const maxAttempts = 2;
-  let lastError: unknown;
+  // Hedged execution: launch primary model immediately; if it hasn't settled in 2.5s
+  // (or fails transiently), race the fast backup model in parallel and return the first valid answer.
+  let settled = false;
+  let backupStarted = false;
+  let backupTimer: ReturnType<typeof setTimeout> | null = null;
 
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    try {
-      const response = await ai.models.generateContent({
-        model: MODEL_ID,
-        contents,
-        config: {
-          systemInstruction,
-          thinkingConfig: {
-            thinkingLevel: ThinkingLevel.LOW,
-          },
-        },
-      });
+  try {
+    const result = await new Promise<{ reply: string; model: string }>((resolve, reject) => {
+      let lastError: unknown = null;
+      let activeCount = 0;
+      let attemptsDone = 0;
 
-      const replyText = response.text?.trim();
-      if (!replyText) {
-        throw new AiServiceError('The AI model returned an empty response.', 502);
-      }
+      const finishResolve = (res: { reply: string; model: string }) => {
+        if (settled) return;
+        settled = true;
+        if (backupTimer) clearTimeout(backupTimer);
+        resolve(res);
+      };
 
-      return { reply: replyText, model: MODEL_ID };
-    } catch (err) {
-      lastError = err;
-      const { status } = extractStatusAndMessage(err);
-      const isTransient = status === 429 || status === 503 || status === 500;
-      if (isTransient && attempt < maxAttempts - 1) {
-        await sleep(500 * (attempt + 1));
-        continue;
-      }
-      break;
-    }
+      const onFailure = (err: unknown) => {
+        if (settled) return;
+        lastError = err;
+        activeCount -= 1;
+        attemptsDone += 1;
+
+        const { status } = extractStatusAndMessage(err);
+        // Immediately fail fast on auth/bad-request errors that fallback cannot fix
+        if (status === 400 || status === 403) {
+          settled = true;
+          if (backupTimer) clearTimeout(backupTimer);
+          reject(err);
+          return;
+        }
+
+        if (!backupStarted) {
+          startBackup();
+          return;
+        }
+
+        if (activeCount <= 0) {
+          if (attemptsDone < 3) {
+            // One quick final retry on fast lite model after brief backoff
+            activeCount += 1;
+            void sleep(400)
+              .then(() =>
+                callCandidate(
+                  ai,
+                  FALLBACK_MODEL_ID,
+                  ThinkingLevel.MINIMAL,
+                  contents,
+                  systemInstruction
+                )
+              )
+              .then(finishResolve)
+              .catch((finalErr) => {
+                if (settled) return;
+                settled = true;
+                reject(finalErr);
+              });
+          } else {
+            settled = true;
+            reject(lastError);
+          }
+        }
+      };
+
+      const startBackup = () => {
+        if (settled || backupStarted) return;
+        backupStarted = true;
+        if (backupTimer) clearTimeout(backupTimer);
+        activeCount += 1;
+        void callCandidate(
+          ai,
+          FALLBACK_MODEL_ID,
+          ThinkingLevel.MINIMAL,
+          contents,
+          systemInstruction
+        )
+          .then(finishResolve)
+          .catch(onFailure);
+      };
+
+      activeCount += 1;
+      void callCandidate(ai, PRIMARY_MODEL_ID, ThinkingLevel.LOW, contents, systemInstruction)
+        .then(finishResolve)
+        .catch(onFailure);
+
+      backupTimer = setTimeout(startBackup, 2500);
+    });
+
+    return result;
+  } catch (err) {
+    const parsed = extractStatusAndMessage(err);
+    throw new AiServiceError(parsed.message, parsed.status);
   }
-
-  const parsed = extractStatusAndMessage(lastError);
-  throw new AiServiceError(parsed.message, parsed.status);
 }

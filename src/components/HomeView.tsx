@@ -5,6 +5,7 @@ import {
   BookOpen,
   Bot,
   Building2,
+  CalendarCheck2,
   ClipboardList,
   FileSearch,
   Table2,
@@ -78,6 +79,14 @@ export const HomeView: React.FC<HomeViewProps> = ({
           >
             <BarChart3 className="theme-accent-text h-4 w-4" />
             <span>Open Analytics Dashboard</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => onNavigate('activity')}
+            className="theme-surface inline-flex items-center gap-2 rounded-md border px-5 py-2.5 text-sm font-semibold transition-colors hover:opacity-90 whitespace-nowrap"
+          >
+            <CalendarCheck2 className="theme-accent-text h-4 w-4" />
+            <span>My Activity (6-Week CSP)</span>
           </button>
           <button
             type="button"
@@ -206,6 +215,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
           <div className="mt-4 divide-y divide-[var(--border-subtle)]">
             {[
               { id: 'about' as SectionId, title: 'About the Project', desc: 'Need, scope, methodology & target population', icon: BookOpen },
+              { id: 'activity' as SectionId, title: 'My Activity – Six-Week CSP', desc: 'Weekly timeline, editable progress, reflections & field photos', icon: CalendarCheck2 },
               { id: 'categories' as SectionId, title: 'User Categories', desc: '6 demographic profiles & typical usage habits', icon: Users },
               { id: 'survey' as SectionId, title: 'Survey Questionnaire', desc: '12-field validated Android usage survey', icon: ClipboardList },
               { id: 'table' as SectionId, title: 'Data Table & CSV Export', desc: 'Search, filter, sort & export collected responses', icon: Table2 },

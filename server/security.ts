@@ -105,6 +105,7 @@ export const verifyLimiter = new SlidingWindowLimiter(5 * 60 * 1000, 20);
 export const adminLoginLimiter = new SlidingWindowLimiter(10 * 60 * 1000, 5);
 export const surveySubmitLimiter = new SlidingWindowLimiter(10 * 60 * 1000, 15);
 export const aiChatLimiter = new SlidingWindowLimiter(5 * 60 * 1000, 30);
+export const chatBoardLimiter = new SlidingWindowLimiter(5 * 60 * 1000, 15);
 
 function sha256Hex(value: string): string {
   return crypto.createHash('sha256').update(value).digest('hex');

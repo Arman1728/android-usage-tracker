@@ -5,16 +5,29 @@ import path from 'node:path';
 import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
 import {
+  addWeeklyPhoto,
   clearSampleResponses,
+  deleteChatBoardMessageById,
   deleteResponseById,
+  deleteWeeklyPhoto,
+  getChatBoardMessages,
   getCounts,
   getDb,
   getProjectSettings,
   getResponses,
+  getWeeklyActivities,
+  insertChatBoardMessage,
   insertSurveyResponse,
   restoreSampleResponses,
   updateProjectSettings,
+  updateWeeklyActivity,
 } from './server/db';
+import {
+  computeActivityProgress,
+  validatePhotoUpload,
+  validateWeeklyActivityUpdate,
+} from './src/utils/activityLogic';
+import { validateChatBoardInput } from './src/utils/chatBoardLogic';
 import {
   computeAnalytics,
   generateFindings,
@@ -27,6 +40,7 @@ import { attachLiveVoiceWebSocket } from './server/live';
 import {
   adminLoginLimiter,
   aiChatLimiter,
+  chatBoardLimiter,
   createSecurityChallenge,
   getActiveProtections,
   getSecurityMetrics,
@@ -49,7 +63,26 @@ import {
 
 dotenv.config();
 
-const PORT = Number(process.env.PORT) || 3000;
+function resolvePort(): number {
+  const args = process.argv.slice(2);
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg.startsWith('--port=')) {
+      const parsed = Number(arg.slice(7));
+      if (Number.isInteger(parsed) && parsed > 0) return parsed;
+    } else if (arg === '--port' && args[i + 1]) {
+      const parsed = Number(args[i + 1]);
+      if (Number.isInteger(parsed) && parsed > 0) return parsed;
+    }
+  }
+  const envPort = Number(process.env.PORT);
+  if (process.env.NODE_ENV !== 'production' && envPort === 8080) {
+    return 3000;
+  }
+  return Number.isInteger(envPort) && envPort > 0 ? envPort : 3000;
+}
+
+const PORT = resolvePort();
 const ADMIN_PASSCODE = process.env.ADMIN_PASSCODE || '12345';
 const TOKEN_SECRET =
   process.env.ADMIN_TOKEN_SECRET?.trim() || crypto.randomBytes(32).toString('hex');
@@ -124,6 +157,19 @@ function requireSecurityToken(
     return;
   }
   next();
+}
+
+function requireAiSecurityToken(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+): void {
+  const settings = getProjectSettings();
+  if (!settings.requireSiteGate) {
+    next();
+    return;
+  }
+  requireSecurityToken(req, res, next);
 }
 
 async function startServer() {
@@ -310,7 +356,98 @@ async function startServer() {
     res.send(csv);
   });
 
-  app.post('/api/ai/chat', requireSecurityToken, async (req, res) => {
+  // Six-Week CSP Activity & Actual Photograph Upload endpoints
+  app.get('/api/activity', (_req, res) => {
+    const weeks = getWeeklyActivities();
+    res.json({
+      weeks,
+      summary: computeActivityProgress(weeks),
+    });
+  });
+
+  app.put('/api/activity/:weekNumber', requireSecurityToken, (req, res) => {
+    const weekNumber = Number(req.params.weekNumber);
+    if (!Number.isInteger(weekNumber) || weekNumber < 1 || weekNumber > 6) {
+      res.status(400).json({ error: 'Week number must be between 1 and 6.' });
+      return;
+    }
+
+    const validation = validateWeeklyActivityUpdate(req.body);
+    if (!validation.valid || !validation.sanitized) {
+      res.status(400).json({ error: validation.error || 'Invalid activity update.' });
+      return;
+    }
+
+    const updatedWeek = updateWeeklyActivity(weekNumber, validation.sanitized);
+    if (!updatedWeek) {
+      res.status(404).json({ error: 'Weekly activity record not found.' });
+      return;
+    }
+
+    const weeks = getWeeklyActivities();
+    res.json({
+      week: updatedWeek,
+      weeks,
+      summary: computeActivityProgress(weeks),
+    });
+  });
+
+  app.post(
+    '/api/activity/:weekNumber/photos',
+    express.json({ limit: '8mb' }),
+    requireSecurityToken,
+    (req, res) => {
+      const weekNumber = Number(req.params.weekNumber);
+      if (!Number.isInteger(weekNumber) || weekNumber < 1 || weekNumber > 6) {
+        res.status(400).json({ error: 'Week number must be between 1 and 6.' });
+        return;
+      }
+
+      const check = validatePhotoUpload(req.body);
+      if (!check.valid || !check.sanitized) {
+        res.status(400).json({ error: check.error || 'Invalid photograph payload.' });
+        return;
+      }
+
+      const result = addWeeklyPhoto(weekNumber, check.sanitized);
+      if (result.error || !result.activity) {
+        res.status(400).json({ error: result.error || 'Unable to attach photograph.' });
+        return;
+      }
+
+      const weeks = getWeeklyActivities();
+      res.status(201).json({
+        photo: result.photo,
+        week: result.activity,
+        weeks,
+        summary: computeActivityProgress(weeks),
+      });
+    }
+  );
+
+  app.delete('/api/activity/:weekNumber/photos/:photoId', requireSecurityToken, (req, res) => {
+    const weekNumber = Number(req.params.weekNumber);
+    const photoId = String(req.params.photoId || '').trim();
+    if (!Number.isInteger(weekNumber) || weekNumber < 1 || weekNumber > 6 || !photoId) {
+      res.status(400).json({ error: 'Invalid week number or photo ID.' });
+      return;
+    }
+
+    const updatedWeek = deleteWeeklyPhoto(weekNumber, photoId);
+    if (!updatedWeek) {
+      res.status(404).json({ error: 'Weekly activity record not found.' });
+      return;
+    }
+
+    const weeks = getWeeklyActivities();
+    res.json({
+      week: updatedWeek,
+      weeks,
+      summary: computeActivityProgress(weeks),
+    });
+  });
+
+  app.post('/api/ai/chat', requireAiSecurityToken, async (req, res) => {
     const ip = getClientIp(req);
     const rate = aiChatLimiter.consume(ip);
     if (!rate.allowed) {
@@ -428,6 +565,60 @@ async function startServer() {
     res.send(csv);
   });
 
+  // Community Chat Board endpoints
+  app.get('/api/chatboard', (_req, res) => {
+    res.json({ messages: getChatBoardMessages(100) });
+  });
+
+  app.post('/api/chatboard', requireAiSecurityToken, (req, res) => {
+    const ip = getClientIp(req);
+    const rate = chatBoardLimiter.consume(ip);
+    if (!rate.allowed) {
+      recordRateLimitHit();
+      res.setHeader('Retry-After', String(rate.retryAfterSeconds));
+      res.status(429).json({
+        error: `Chat board rate limit reached. Please wait ${rate.retryAfterSeconds}s before posting again.`,
+      });
+      return;
+    }
+
+    const body = (req.body || {}) as Record<string, unknown>;
+    if (typeof body._hp === 'string' && body._hp.trim().length > 0) {
+      recordBlockedBot();
+      res.status(403).json({ error: 'Automated submission blocked by security verification.' });
+      return;
+    }
+
+    const validation = validateChatBoardInput(body);
+    if (!validation.valid || !validation.sanitized) {
+      res.status(400).json({ error: validation.error || 'Invalid chat board message.' });
+      return;
+    }
+
+    const created = insertChatBoardMessage(validation.sanitized);
+    res.status(201).json({
+      record: created,
+      messages: getChatBoardMessages(100),
+    });
+  });
+
+  app.delete('/api/admin/chatboard/:id', requireAdmin, (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      res.status(400).json({ error: 'Invalid chat message ID.' });
+      return;
+    }
+    const deleted = deleteChatBoardMessageById(id);
+    if (!deleted) {
+      res.status(404).json({ error: 'Chat board message not found.' });
+      return;
+    }
+    res.json({ deletedId: id, messages: getChatBoardMessages(100) });
+  });
+
+  const httpServer = http.createServer(app);
+  attachLiveVoiceWebSocket(httpServer);
+
   if (process.env.NODE_ENV === 'production') {
     const distDir = path.resolve(process.cwd(), 'dist');
     app.use(express.static(distDir));
@@ -435,15 +626,27 @@ async function startServer() {
       res.sendFile(path.join(distDir, 'index.html'));
     });
   } else {
-    const vite = await createViteServer({
+    const vitePromise = createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
     });
-    app.use(vite.middlewares);
+    vitePromise.catch((err) => {
+      console.error('Failed to initialize Vite dev middleware:', err);
+    });
+    app.use(async (req, res, next) => {
+      try {
+        const vite = await vitePromise;
+        vite.middlewares(req, res, next);
+      } catch (err) {
+        next(err);
+      }
+    });
   }
 
-  const httpServer = http.createServer(app);
-  attachLiveVoiceWebSocket(httpServer);
+  httpServer.on('error', (err) => {
+    console.error(`HTTP server error on port ${PORT}:`, err);
+    process.exit(1);
+  });
 
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`Android Usage Research Portal running on http://0.0.0.0:${PORT}`);

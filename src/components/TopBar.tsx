@@ -21,6 +21,7 @@ const SECTION_TITLES: Record<SectionId, string> = {
   home: 'Home Overview',
   about: 'About the Project',
   categories: 'User Categories',
+  activity: 'My Activity · Six-Week CSP',
   survey: 'Survey Questionnaire',
   analytics: 'Analytics Dashboard',
   table: 'Collected Data Table',
@@ -65,7 +66,14 @@ export const TopBar: React.FC<TopBarProps> = ({
         </div>
       </div>
 
-      <nav className="theme-muted hidden items-center gap-6 text-sm font-medium md:flex">
+      <nav className="theme-muted hidden items-center gap-5 text-sm font-medium md:flex">
+        <button
+          type="button"
+          onClick={() => onNavigate('activity')}
+          className="whitespace-nowrap shrink-0 hover:underline underline-offset-4"
+        >
+          My Activity
+        </button>
         <button
           type="button"
           onClick={() => onNavigate('analytics')}

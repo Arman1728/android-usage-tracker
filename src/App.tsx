@@ -4,16 +4,19 @@ import { AdminView } from './components/AdminView';
 import { AiBotView } from './components/AiBotView';
 import { AnalyticsView } from './components/AnalyticsView';
 import { CategoriesView } from './components/CategoriesView';
+import { ChatBoardWidget } from './components/ChatBoardWidget';
 import { ConclusionView } from './components/ConclusionView';
 import { DataTableView } from './components/DataTableView';
 import { FindingsView } from './components/FindingsView';
 import { HomeView } from './components/HomeView';
+import { MyActivityView } from './components/MyActivityView';
 import { RecommendationsView } from './components/RecommendationsView';
 import { SecurityGate } from './components/SecurityGate';
 import { Sidebar } from './components/Sidebar';
 import { SurveyFormView } from './components/SurveyFormView';
 import { TopBar } from './components/TopBar';
 import {
+  ActivityProgressSummary,
   DatasetCounts,
   DatasetScope,
   ProjectSettings,
@@ -25,13 +28,16 @@ import {
   TEAM_MEMBERS,
   THEME_OPTIONS,
   ThemeId,
+  WeeklyActivity,
 } from './types/survey';
+import { computeActivityProgress, DEFAULT_SIX_WEEK_ACTIVITIES } from './utils/activityLogic';
 import { computeAnalytics, generateFindings } from './utils/surveyLogic';
 
 const VALID_SECTIONS: SectionId[] = [
   'home',
   'about',
   'categories',
+  'activity',
   'survey',
   'analytics',
   'table',
@@ -84,6 +90,12 @@ export default function App() {
     sampleCount: 0,
   });
   const [settings, setSettings] = useState<ProjectSettings>(DEFAULT_SETTINGS);
+  const [weeklyActivities, setWeeklyActivities] = useState<WeeklyActivity[]>(
+    DEFAULT_SIX_WEEK_ACTIVITIES
+  );
+  const [activitySummary, setActivitySummary] = useState<ActivityProgressSummary>(() =>
+    computeActivityProgress(DEFAULT_SIX_WEEK_ACTIVITIES)
+  );
   const [scope, setScope] = useState<DatasetScope>('all');
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -132,7 +144,10 @@ export default function App() {
   const fetchSurveyData = useCallback(async () => {
     try {
       setLoadError(null);
-      const res = await fetch('/api/responses?scope=all');
+      const [res, activityRes] = await Promise.all([
+        fetch('/api/responses?scope=all'),
+        fetch('/api/activity'),
+      ]);
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);
       }
@@ -142,6 +157,16 @@ export default function App() {
       if (data.settings) {
         setSettings(data.settings);
         setRequireSiteGate(Boolean(data.settings.requireSiteGate));
+      }
+      if (activityRes.ok) {
+        const actData = (await activityRes.json()) as {
+          weeks?: WeeklyActivity[];
+          summary?: ActivityProgressSummary;
+        };
+        if (Array.isArray(actData.weeks) && actData.weeks.length > 0) {
+          setWeeklyActivities(actData.weeks);
+          setActivitySummary(actData.summary || computeActivityProgress(actData.weeks));
+        }
       }
     } catch {
       setLoadError('Unable to load survey dataset from the backend server.');
@@ -347,6 +372,20 @@ export default function App() {
                   onNavigate={handleNavigate}
                 />
               )}
+              {activeSection === 'activity' && (
+                <MyActivityView
+                  weeks={weeklyActivities}
+                  summary={activitySummary}
+                  settings={settings}
+                  securityToken={securityToken}
+                  onSecurityTokenIssued={handleSecurityVerified}
+                  onSecurityInvalidated={handleSecurityInvalidated}
+                  onActivitiesUpdated={(weeks, summary) => {
+                    setWeeklyActivities(weeks);
+                    setActivitySummary(summary);
+                  }}
+                />
+              )}
               {activeSection === 'survey' && (
                 <SurveyFormView
                   onSubmitted={fetchSurveyData}
@@ -395,6 +434,7 @@ export default function App() {
                   counts={counts}
                   scope={scope}
                   onScopeChange={setScope}
+                  requireSiteGate={requireSiteGate}
                   securityToken={securityToken}
                   onSecurityTokenIssued={handleSecurityVerified}
                   onSecurityInvalidated={handleSecurityInvalidated}
@@ -428,6 +468,16 @@ export default function App() {
           </div>
         </footer>
       </div>
+
+      <ChatBoardWidget
+        counts={counts}
+        scope={scope}
+        requireSiteGate={requireSiteGate}
+        securityToken={securityToken}
+        adminToken={adminToken}
+        onNavigate={handleNavigate}
+        onSecurityInvalidated={handleSecurityInvalidated}
+      />
     </div>
   );
 }
